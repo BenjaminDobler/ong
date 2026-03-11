@@ -1,0 +1,114 @@
+import { existsSync, cpSync, mkdirSync } from 'node:fs'
+import { resolve, relative, join } from 'node:path'
+import type { Plugin } from 'vite'
+import type { ResolvedBuildOptions, AssetConfig } from './workspace.js'
+
+/**
+ * Injects global styles, scripts, polyfills, and the entry point into index.html.
+ * This makes a standard Angular index.html work with Vite without modifications.
+ */
+export function htmlInjectPlugin(opts: ResolvedBuildOptions): Plugin {
+  const viteRoot = resolve(opts.workspaceRoot, opts.sourceRoot)
+  const browserRelative = '/' + relative(viteRoot, opts.browser)
+  const styleRefs = opts.styles.map(s => '/' + relative(viteRoot, s))
+  const scriptRefs = opts.scripts.map(s => '/' + relative(viteRoot, s))
+  const crossOriginAttr = opts.crossOrigin !== 'none'
+    ? ` crossorigin="${opts.crossOrigin}"`
+    : ''
+
+  return {
+    name: 'ong:html-inject',
+    transformIndexHtml: {
+      order: 'pre' as const,
+      handler(html: string) {
+        let result = html
+
+        // Inject/update base href if not default
+        if (opts.baseHref && opts.baseHref !== '/') {
+          if (result.includes('<base href=')) {
+            result = result.replace(/<base href="[^"]*">/, `<base href="${opts.baseHref}">`)
+          } else {
+            result = result.replace('<head>', `<head>\n  <base href="${opts.baseHref}">`)
+          }
+        }
+
+        // Inject global stylesheets
+        if (styleRefs.length) {
+          const tags = styleRefs
+            .map(s => `  <link rel="stylesheet" href="${s}"${crossOriginAttr}>`)
+            .join('\n')
+          result = result.replace('</head>', `${tags}\n</head>`)
+        }
+
+        // Inject global scripts
+        if (scriptRefs.length) {
+          const tags = scriptRefs
+            .map(s => `  <script type="module" src="${s}"${crossOriginAttr}></script>`)
+            .join('\n')
+          result = result.replace('</head>', `${tags}\n</head>`)
+        }
+
+        // Inject polyfills before the entry point
+        if (opts.polyfills.length) {
+          const tags = opts.polyfills
+            .map(p => {
+              // Bare specifiers (e.g. "zone.js") become imports, paths become src refs
+              if (p.startsWith('.') || p.startsWith('/')) {
+                const ref = '/' + relative(viteRoot, resolve(opts.workspaceRoot, p))
+                return `  <script type="module" src="${ref}"${crossOriginAttr}></script>`
+              }
+              return `  <script type="module">import '${p}';</script>`
+            })
+            .join('\n')
+          result = result.replace('</body>', `${tags}\n</body>`)
+        }
+
+        // Inject entry point if not already present
+        const hasEntry = html.includes(`src="${browserRelative}"`) ||
+          html.includes('src="/main.ts"') ||
+          html.includes('src="main.ts"')
+        if (!hasEntry) {
+          result = result.replace(
+            '</body>',
+            `  <script type="module" src="${browserRelative}"${crossOriginAttr}></script>\n</body>`
+          )
+        }
+
+        return result
+      },
+    },
+  }
+}
+
+/**
+ * Copies static assets from angular.json config to build output.
+ */
+export function assetCopyPlugin(
+  assets: AssetConfig[],
+  workspaceRoot: string,
+  sourceRoot: string,
+): Plugin {
+  return {
+    name: 'ong:assets',
+    writeBundle(bundleOpts) {
+      const outDir = bundleOpts.dir || resolve(workspaceRoot, 'dist')
+
+      for (const asset of assets) {
+        if (typeof asset === 'string') {
+          const src = resolve(workspaceRoot, asset)
+          if (existsSync(src)) {
+            const dest = join(outDir, asset.replace(sourceRoot + '/', ''))
+            cpSync(src, dest, { recursive: true })
+          }
+        } else if (asset?.input) {
+          const inputDir = resolve(workspaceRoot, asset.input)
+          if (existsSync(inputDir)) {
+            const outputDir = join(outDir, asset.output || '')
+            mkdirSync(outputDir, { recursive: true })
+            cpSync(inputDir, outputDir, { recursive: true })
+          }
+        }
+      }
+    },
+  }
+}
