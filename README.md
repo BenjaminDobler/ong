@@ -159,7 +159,7 @@ const viteConfig = createViteConfig(opts)
 
 - Node.js 18+
 - Angular 17+ (standalone components recommended)
-- Vite 6+
+- Vite 8+ (beta)
 
 ## License
 
