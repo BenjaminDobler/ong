@@ -1,4 +1,4 @@
-import { resolve } from 'node:path'
+import { resolve, dirname } from 'node:path'
 import { readFileSync, existsSync } from 'node:fs'
 import type { InlineConfig, Alias } from 'vite'
 import { angular } from '@oxc-angular/vite'
@@ -6,46 +6,75 @@ import type { ResolvedBuildOptions } from './workspace.js'
 import { htmlInjectPlugin, assetCopyPlugin } from './plugins.js'
 
 /**
+ * Parse a tsconfig JSON file, stripping comments and trailing commas.
+ */
+function parseTsconfig(filePath: string): any {
+  const raw = readFileSync(filePath, 'utf-8')
+  const stripped = raw
+    // Remove single-line comments
+    .replace(/\/\/.*$/gm, '')
+    // Remove multi-line comments
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    // Remove trailing commas before } or ]
+    .replace(/,\s*([\]}])/g, '$1')
+  return JSON.parse(stripped)
+}
+
+/**
  * Reads tsconfig paths and converts them to Vite resolve aliases.
- * Follows tsconfig "extends" chain to find paths from base configs.
+ * Follows tsconfig "extends" chain (including array extends) to find paths from base configs.
  */
 export function resolveTsconfigPaths(tsconfig: string, workspaceRoot: string): Alias[] {
   const aliases: Alias[] = []
 
   try {
-    let configPath: string | undefined = tsconfig
-    let paths: Record<string, string[]> | undefined
-    let baseUrl = '.'
+    // Collect configs from root of extends chain to the leaf (tsconfig.app.json)
+    // Each entry stores the parsed config and the directory of the tsconfig file
+    const configChain: { config: any; dir: string }[] = []
+    const visited = new Set<string>()
 
-    // Walk the extends chain to find paths
-    // Collect baseUrl from each level; paths from the first config that defines them
-    const configChain: { compilerOptions: Record<string, any> }[] = []
-    while (configPath) {
-      if (!existsSync(configPath)) break
-      const raw = readFileSync(configPath, 'utf-8')
-      // Strip comments (single-line // and multi-line /* */)
-      const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')
-      const config = JSON.parse(stripped)
-      configChain.push(config)
+    const walk = (configPath: string) => {
+      const resolved = resolve(configPath)
+      if (visited.has(resolved) || !existsSync(resolved)) return
+      visited.add(resolved)
 
+      const config = parseTsconfig(resolved)
+      const dir = dirname(resolved)
+
+      // Recurse into extends first (parents before children in the chain)
       if (config.extends) {
-        configPath = resolve(configPath, '..', config.extends)
-        if (!configPath.endsWith('.json')) configPath += '.json'
-      } else {
-        break
+        const extendsList = Array.isArray(config.extends) ? config.extends : [config.extends]
+        for (const ext of extendsList) {
+          let extPath = resolve(dir, ext)
+          if (!extPath.endsWith('.json')) extPath += '.json'
+          walk(extPath)
+        }
       }
+
+      configChain.push({ config, dir })
     }
 
-    // Resolve inherited values: child overrides parent
-    for (let i = configChain.length - 1; i >= 0; i--) {
-      const compilerOptions = configChain[i].compilerOptions ?? {}
-      if (compilerOptions.baseUrl !== undefined) baseUrl = compilerOptions.baseUrl
-      if (compilerOptions.paths !== undefined) paths = compilerOptions.paths
+    walk(tsconfig)
+
+    // Resolve inherited values: earlier entries (parents) are overridden by later (children)
+    let baseUrl: string | undefined
+    let baseUrlDir = workspaceRoot
+    let paths: Record<string, string[]> | undefined
+
+    for (const { config, dir } of configChain) {
+      const co = config.compilerOptions ?? {}
+      if (co.baseUrl !== undefined) {
+        baseUrl = co.baseUrl
+        baseUrlDir = dir  // baseUrl is relative to the tsconfig that defines it
+      }
+      if (co.paths !== undefined) {
+        paths = co.paths
+      }
     }
 
     if (!paths) return aliases
 
-    const baseDir = resolve(workspaceRoot, baseUrl)
+    const baseDir = baseUrl !== undefined ? resolve(baseUrlDir, baseUrl) : workspaceRoot
 
     for (const [pattern, targets] of Object.entries(paths)) {
       if (!targets.length) continue
@@ -61,8 +90,8 @@ export function resolveTsconfigPaths(tsconfig: string, workspaceRoot: string): A
         aliases.push({ find: pattern, replacement: resolve(baseDir, target) })
       }
     }
-  } catch {
-    // Ignore tsconfig parse errors — fall back to no aliases
+  } catch (err) {
+    console.warn(`  Warning: failed to resolve tsconfig paths: ${(err as Error).message}`)
   }
 
   return aliases
