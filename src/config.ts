@@ -97,8 +97,8 @@ export function createViteConfig(opts: ResolvedBuildOptions): InlineConfig {
   const cssPreprocessorOptions: Record<string, any> = {}
   if (opts.stylePreprocessorOptions.includePaths.length) {
     const paths = opts.stylePreprocessorOptions.includePaths
-    cssPreprocessorOptions.scss = { includePaths: paths }
-    cssPreprocessorOptions.sass = { includePaths: paths }
+    cssPreprocessorOptions.scss = { api: 'modern-compiler', loadPaths: paths }
+    cssPreprocessorOptions.sass = { api: 'modern-compiler', loadPaths: paths }
     cssPreprocessorOptions.less = { paths }
   }
 
