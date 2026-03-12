@@ -18,26 +18,29 @@ export function resolveTsconfigPaths(tsconfig: string, workspaceRoot: string): A
     let baseUrl = '.'
 
     // Walk the extends chain to find paths
-    while (configPath && !paths) {
+    // Collect baseUrl from each level; paths from the first config that defines them
+    const configChain: { compilerOptions: Record<string, any> }[] = []
+    while (configPath) {
       if (!existsSync(configPath)) break
       const raw = readFileSync(configPath, 'utf-8')
       // Strip comments (single-line // and multi-line /* */)
       const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')
       const config = JSON.parse(stripped)
-      const compilerOptions = config.compilerOptions ?? {}
-
-      if (compilerOptions.paths) {
-        paths = compilerOptions.paths
-        baseUrl = compilerOptions.baseUrl ?? '.'
-      }
+      configChain.push(config)
 
       if (config.extends) {
         configPath = resolve(configPath, '..', config.extends)
-        // Add .json if not present
         if (!configPath.endsWith('.json')) configPath += '.json'
       } else {
         break
       }
+    }
+
+    // Resolve inherited values: child overrides parent
+    for (let i = configChain.length - 1; i >= 0; i--) {
+      const compilerOptions = configChain[i].compilerOptions ?? {}
+      if (compilerOptions.baseUrl !== undefined) baseUrl = compilerOptions.baseUrl
+      if (compilerOptions.paths !== undefined) paths = compilerOptions.paths
     }
 
     if (!paths) return aliases
