@@ -47,6 +47,9 @@ function parseArgs(argv: string[]): CliArgs {
       result.watch = true
     } else if (arg === '--help' || arg === '-h') {
       return { command: 'help' }
+    } else if (!arg.startsWith('-') && !result.project) {
+      // Treat bare positional arg as project (e.g. "ong serve apps/editor")
+      result.project = arg
     }
   }
 

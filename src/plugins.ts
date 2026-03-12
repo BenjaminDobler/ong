@@ -1,4 +1,4 @@
-import { existsSync, cpSync, mkdirSync } from 'node:fs'
+import { existsSync, cpSync, mkdirSync, statSync } from 'node:fs'
 import { resolve, relative, join } from 'node:path'
 import type { Plugin } from 'vite'
 import type { ResolvedBuildOptions, AssetConfig } from './workspace.js'
@@ -50,17 +50,19 @@ export function htmlInjectPlugin(opts: ResolvedBuildOptions): Plugin {
 
         // Inject polyfills before the entry point
         if (opts.polyfills.length) {
-          const tags = opts.polyfills
+          const imports = opts.polyfills
             .map(p => {
-              // Bare specifiers (e.g. "zone.js") become imports, paths become src refs
-              if (p.startsWith('.') || p.startsWith('/')) {
-                const ref = '/' + relative(viteRoot, resolve(opts.workspaceRoot, p))
-                return `  <script type="module" src="${ref}"${crossOriginAttr}></script>`
-              }
-              return `  <script type="module">import '${p}';</script>`
+              // Check if it's a file path (relative to workspace root or absolute)
+              const resolved = resolve(opts.workspaceRoot, p)
+              const isFile = p.startsWith('.') || p.startsWith('/') || existsSync(resolved)
+              // Use absolute path for file imports so Vite can resolve them regardless of root
+              return isFile ? `import '${resolved}';` : `import '${p}';`
             })
             .join('\n')
-          result = result.replace('</body>', `${tags}\n</body>`)
+          result = result.replace(
+            '</body>',
+            `  <script type="module">\n${imports}\n</script>\n</body>`
+          )
         }
 
         // Inject entry point if not already present

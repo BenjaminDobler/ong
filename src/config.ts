@@ -1,8 +1,73 @@
 import { resolve } from 'node:path'
-import type { InlineConfig } from 'vite'
+import { readFileSync, existsSync } from 'node:fs'
+import type { InlineConfig, Alias } from 'vite'
 import { angular } from '@oxc-angular/vite'
 import type { ResolvedBuildOptions } from './workspace.js'
 import { htmlInjectPlugin, assetCopyPlugin } from './plugins.js'
+
+/**
+ * Reads tsconfig paths and converts them to Vite resolve aliases.
+ * Follows tsconfig "extends" chain to find paths from base configs.
+ */
+function resolveTsconfigPaths(tsconfig: string, workspaceRoot: string): Alias[] {
+  const aliases: Alias[] = []
+
+  try {
+    let configPath: string | undefined = tsconfig
+    let paths: Record<string, string[]> | undefined
+    let baseUrl = '.'
+
+    // Walk the extends chain to find paths
+    while (configPath && !paths) {
+      if (!existsSync(configPath)) break
+      const raw = readFileSync(configPath, 'utf-8')
+      // Strip comments (single-line // and multi-line /* */)
+      const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')
+      const config = JSON.parse(stripped)
+      const compilerOptions = config.compilerOptions ?? {}
+
+      if (compilerOptions.paths) {
+        paths = compilerOptions.paths
+        baseUrl = compilerOptions.baseUrl ?? '.'
+      }
+
+      if (config.extends) {
+        configPath = resolve(configPath, '..', config.extends)
+        // Add .json if not present
+        if (!configPath.endsWith('.json')) configPath += '.json'
+      } else {
+        break
+      }
+    }
+
+    if (!paths) return aliases
+
+    const baseDir = resolve(workspaceRoot, baseUrl)
+
+    for (const [pattern, targets] of Object.entries(paths)) {
+      if (!targets.length) continue
+      const target = targets[0]
+
+      if (pattern.endsWith('/*')) {
+        // Wildcard mapping: "@scope/lib/*" -> "libs/lib/src/*"
+        const prefix = pattern.slice(0, -2)
+        const targetDir = resolve(baseDir, target.slice(0, -2))
+        aliases.push({ find: new RegExp(`^${escapeRegex(prefix)}/(.*)`), replacement: `${targetDir}/$1` })
+      } else {
+        // Exact mapping: "@scope/lib" -> "libs/lib/src/index.ts"
+        aliases.push({ find: pattern, replacement: resolve(baseDir, target) })
+      }
+    }
+  } catch {
+    // Ignore tsconfig parse errors — fall back to no aliases
+  }
+
+  return aliases
+}
+
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
 
 /**
  * Creates a Vite InlineConfig from resolved Angular build options.
@@ -60,6 +125,7 @@ export function createViteConfig(opts: ResolvedBuildOptions): InlineConfig {
 
     resolve: {
       preserveSymlinks: opts.preserveSymlinks,
+      alias: resolveTsconfigPaths(opts.tsconfig, workspaceRoot),
     },
 
     css: Object.keys(cssPreprocessorOptions).length
@@ -94,6 +160,9 @@ export function createViteConfig(opts: ResolvedBuildOptions): InlineConfig {
       open: opts.serve.open,
       host: opts.serve.host ?? false,
       watch: opts.poll ? { usePolling: true, interval: opts.poll } : undefined,
+      fs: {
+        allow: [workspaceRoot],
+      },
     },
   }
 }
