@@ -88,6 +88,7 @@ export function printHelp() {
     -o, --open                  Open browser on start
         --host <host>           Dev server host
     -w, --watch                 Rebuild on file changes (build mode)
+        --prebundle-libs            Pre-bundle local libs to resolve circular deps
 
   ${c.bold}Workspace support:${c.reset}
     angular.json                Standard Angular CLI workspace

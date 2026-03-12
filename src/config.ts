@@ -9,7 +9,7 @@ import { htmlInjectPlugin, assetCopyPlugin } from './plugins.js'
  * Reads tsconfig paths and converts them to Vite resolve aliases.
  * Follows tsconfig "extends" chain to find paths from base configs.
  */
-function resolveTsconfigPaths(tsconfig: string, workspaceRoot: string): Alias[] {
+export function resolveTsconfigPaths(tsconfig: string, workspaceRoot: string): Alias[] {
   const aliases: Alias[] = []
 
   try {
@@ -92,6 +92,7 @@ export function createViteConfig(opts: ResolvedBuildOptions): InlineConfig {
 
   // deployUrl takes precedence over baseHref for Vite's base
   const base = opts.deployUrl || opts.baseHref || '/'
+
 
   // Sass/Less includePaths → Vite css.preprocessorOptions
   const cssPreprocessorOptions: Record<string, any> = {}

@@ -1,6 +1,7 @@
 import { createServer, build } from 'vite'
 import { resolveWorkspace, type ResolveOptions } from './workspace.js'
 import { createViteConfig } from './config.js'
+import { prebundleLibs } from './prebundle.js'
 import { banner, printBuildStats, printHelp, error } from './log.js'
 
 // ═══════════════════════════════════════════════════════════════
@@ -15,6 +16,7 @@ interface CliArgs {
   open?: boolean
   host?: string
   watch?: boolean
+  prebundleLibs?: boolean
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -45,6 +47,8 @@ function parseArgs(argv: string[]): CliArgs {
       result.host = next; i++
     } else if (arg === '--watch' || arg === '-w') {
       result.watch = true
+    } else if (arg === '--prebundle-libs') {
+      result.prebundleLibs = true
     } else if (arg === '--help' || arg === '-h') {
       return { command: 'help' }
     } else if (!arg.startsWith('-') && !result.project) {
@@ -83,7 +87,11 @@ async function main() {
   const buildOpts = resolveWorkspace(cwd, resolveOpts)
   banner(args.command, buildOpts.projectName, buildOpts.configName)
 
-  const viteConfig = createViteConfig(buildOpts)
+  let viteConfig = createViteConfig(buildOpts)
+
+  if (args.prebundleLibs && args.command === 'serve') {
+    viteConfig = await prebundleLibs(viteConfig, buildOpts)
+  }
 
   if (args.command === 'serve') {
     const server = await createServer(viteConfig)
