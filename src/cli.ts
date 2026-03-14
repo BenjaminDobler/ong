@@ -97,7 +97,7 @@ async function main() {
     const server = await createServer(viteConfig)
     await server.listen()
     server.printUrls()
-    console.log()
+    console.log('[ong] Dev server ready')
   }
 
   if (args.command === 'build') {
