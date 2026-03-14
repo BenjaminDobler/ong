@@ -5,7 +5,7 @@
 <h1 align="center">@richapps/ong</h1>
 
 <p align="center">
-  Angular CLI powered by <a href="https://vite.dev">Vite</a> + <a href="https://github.com/nicoss/oxc-angular-compiler">OXC</a><br>
+  Angular CLI powered by <a href="https://vite.dev">Vite</a> + <a href="https://github.com/voidzero-dev/oxc-angular-compiler">OXC</a><br>
   <em>Blazing fast drop-in replacement for <code>ng serve</code> and <code>ng build</code></em>
 </p>
 
@@ -13,7 +13,7 @@
 
 ## What is ong?
 
-**ong** uses the Rust-based [OXC Angular compiler](https://github.com/nicoss/oxc-angular-compiler) and [Vite](https://vite.dev) to compile and serve Angular applications — no Webpack, no esbuild, just raw speed.
+**ong** uses the Rust-based [OXC Angular compiler](https://github.com/voidzero-dev/oxc-angular-compiler) and [Vite](https://vite.dev) to compile and serve Angular applications — no Webpack, no esbuild, just raw speed.
 
 It reads your existing `angular.json` (or Nx `project.json`) and works with a standard Angular project out of the box. No config files to write, no migration steps.
 
@@ -109,6 +109,7 @@ Configurations, file replacements, global styles/scripts, and assets are all rea
 | `stylePreprocessorOptions` | Supported | `includePaths` mapped to Vite `css.preprocessorOptions` |
 | `watch` | Supported | Maps to Vite `build.watch` (also via `--watch` CLI flag) |
 | `poll` | Supported | Maps to Vite `server.watch.usePolling` with interval |
+| Tailwind CSS | Auto-detected | `tailwind.config.js` in the project directory is automatically wired into Vite's PostCSS pipeline |
 
 ### Serve target options
 
@@ -118,7 +119,8 @@ Configurations, file replacements, global styles/scripts, and assets are all rea
 | `open` | Supported | |
 | `host` | Supported | |
 | `poll` | Supported | File-watching poll interval |
-| `buildTarget` | Ignored | Configuration is resolved from the build target directly |
+| `buildTarget` | Supported | Build configuration is resolved from the serve target's `buildTarget` (e.g. `"app:build:standalone"`) |
+| `defaultConfiguration` | Supported | Serve target's default configuration is used when no `-c` flag is passed |
 
 ### Not yet supported
 
@@ -158,7 +160,7 @@ const viteConfig = createViteConfig(opts)
 ## Requirements
 
 - Node.js 18+
-- Angular 17+ (standalone components recommended)
+- Angular 19+ (required by the OXC Angular compiler)
 - Vite 8+ (beta)
 
 ## License

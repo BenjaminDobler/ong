@@ -1,4 +1,4 @@
-import { existsSync, cpSync, mkdirSync, statSync } from 'node:fs'
+import { existsSync, cpSync, mkdirSync } from 'node:fs'
 import { resolve, relative, join } from 'node:path'
 import type { Plugin } from 'vite'
 import type { ResolvedBuildOptions, AssetConfig } from './workspace.js'
@@ -9,9 +9,27 @@ import type { ResolvedBuildOptions, AssetConfig } from './workspace.js'
  */
 export function htmlInjectPlugin(opts: ResolvedBuildOptions): Plugin {
   const viteRoot = resolve(opts.workspaceRoot, opts.sourceRoot)
-  const browserRelative = '/' + relative(viteRoot, opts.browser)
-  const styleRefs = opts.styles.map(s => '/' + relative(viteRoot, s))
-  const scriptRefs = opts.scripts.map(s => '/' + relative(viteRoot, s))
+  const browserAbs = resolve(opts.browser)
+  const browserRelative = browserAbs.startsWith(viteRoot + '/') || browserAbs === viteRoot
+    ? '/' + relative(viteRoot, browserAbs)
+    : '/@fs' + browserAbs
+  const styleRefs = opts.styles.map(s => {
+    const abs = resolve(s)
+    if (abs.startsWith(viteRoot + '/') || abs === viteRoot) {
+      return '/' + relative(viteRoot, abs)
+    }
+    return '/@fs' + abs
+  })
+
+  // Scripts outside the Vite root can't use relative URLs — use /@fs/ absolute paths instead.
+  // Vite serves these because server.fs.allow includes workspaceRoot.
+  const scriptRefs = opts.scripts.map(s => {
+    const abs = resolve(s)
+    if (abs.startsWith(viteRoot + '/') || abs === viteRoot) {
+      return '/' + relative(viteRoot, abs)
+    }
+    return '/@fs' + abs
+  })
   const crossOriginAttr = opts.crossOrigin !== 'none'
     ? ` crossorigin="${opts.crossOrigin}"`
     : ''
@@ -40,10 +58,10 @@ export function htmlInjectPlugin(opts: ResolvedBuildOptions): Plugin {
           result = result.replace('</head>', `${tags}\n</head>`)
         }
 
-        // Inject global scripts
+        // Inject global scripts (plain scripts, not modules — they may define globals like registerLanguage)
         if (scriptRefs.length) {
           const tags = scriptRefs
-            .map(s => `  <script type="module" src="${s}"${crossOriginAttr}></script>`)
+            .map(s => `  <script src="${s}"${crossOriginAttr}></script>`)
             .join('\n')
           result = result.replace('</head>', `${tags}\n</head>`)
         }

@@ -296,15 +296,22 @@ function resolveProjectOptions(
     configName = buildTarget.defaultConfiguration ?? 'production'
   }
 
-  // Merge base + config overrides
-  const base = buildTarget.options ?? {}
-  const overrides = buildTarget.configurations?.[configName]
-  const merged = overrides ? { ...base, ...overrides } : { ...base }
-
   // Serve target options
   const serveBase = serveTarget?.options ?? {}
   const serveOverrides = serveTarget?.configurations?.[configName]
   const serveOpts = serveOverrides ? { ...serveBase, ...serveOverrides } : { ...serveBase }
+
+  // If the serve config has a buildTarget like "project:build:_standalone", use that build config name
+  let buildConfigName = configName
+  if (serveOverrides?.buildTarget) {
+    const parts = (serveOverrides.buildTarget as string).split(':')
+    if (parts.length >= 3) buildConfigName = parts[2]
+  }
+
+  // Merge base + config overrides
+  const base = buildTarget.options ?? {}
+  const overrides = buildTarget.configurations?.[buildConfigName]
+  const merged = overrides ? { ...base, ...overrides } : { ...base }
 
   const projectRoot = project.root ?? ''
   const sourceRoot = project.sourceRoot ?? join(projectRoot, 'src')

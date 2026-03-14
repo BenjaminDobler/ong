@@ -1,5 +1,6 @@
-import { resolve, dirname } from 'node:path'
+import { resolve, dirname, join } from 'node:path'
 import { readFileSync, existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import type { InlineConfig, Alias } from 'vite'
 import { angular } from '@oxc-angular/vite'
 import type { ResolvedBuildOptions } from './workspace.js'
@@ -87,7 +88,9 @@ export function resolveTsconfigPaths(tsconfig: string, workspaceRoot: string): A
         aliases.push({ find: new RegExp(`^${escapeRegex(prefix)}/(.*)`), replacement: `${targetDir}/$1` })
       } else {
         // Exact mapping: "@scope/lib" -> "libs/lib/src/index.ts"
-        aliases.push({ find: pattern, replacement: resolve(baseDir, target) })
+        // Use RegExp with $ anchor so "@scope/lib" doesn't prefix-match "@scope/lib/sub"
+        // (Vite string aliases do prefix matching, but tsconfig exact paths should only match exactly)
+        aliases.push({ find: new RegExp(`^${escapeRegex(pattern)}$`), replacement: resolve(baseDir, target) })
       }
     }
   } catch (err) {
@@ -99,6 +102,21 @@ export function resolveTsconfigPaths(tsconfig: string, workspaceRoot: string): A
 
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * Detect Angular version from the workspace's @angular/core package.json.
+ */
+function detectAngularVersion(workspaceRoot: string): { major: number; minor: number; patch: number } | undefined {
+  try {
+    const pkgPath = join(workspaceRoot, 'node_modules/@angular/core/package.json')
+    if (!existsSync(pkgPath)) return undefined
+    const { version } = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+    const [major, minor, patch] = version.split('.').map(Number)
+    return { major, minor, patch }
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -135,6 +153,24 @@ export function createViteConfig(opts: ResolvedBuildOptions): InlineConfig {
     cssPreprocessorOptions.less = { paths }
   }
 
+  // Auto-detect tailwind.config.js in the project directory and wire up PostCSS
+  const projectDir = resolve(workspaceRoot, opts.sourceRoot, '..')
+  const tailwindConfigPath = ['tailwind.config.js', 'tailwind.config.ts', 'tailwind.config.cjs', 'tailwind.config.mjs']
+    .map(f => join(projectDir, f))
+    .find(existsSync)
+  const postcssPlugins: Record<string, any> = {}
+  if (tailwindConfigPath) {
+    try {
+      const require = createRequire(join(workspaceRoot, 'package.json'))
+      const tailwindcss = require('tailwindcss')
+      const autoprefixer = require('autoprefixer')
+      postcssPlugins['tailwindcss'] = tailwindcss({ config: tailwindConfigPath })
+      postcssPlugins['autoprefixer'] = autoprefixer()
+    } catch (e) {
+      console.warn('[ong] Tailwind PostCSS setup failed:', (e as Error).message)
+    }
+  }
+
   return {
     root: resolve(workspaceRoot, sourceRoot),
     base,
@@ -149,6 +185,7 @@ export function createViteConfig(opts: ResolvedBuildOptions): InlineConfig {
         liveReload: !opts.optimization,
         workspaceRoot,
         ...(opts.fileReplacements.length ? { fileReplacements: opts.fileReplacements } : {}),
+        angularVersion: detectAngularVersion(workspaceRoot),
       }),
       assetCopyPlugin(opts.assets, workspaceRoot, sourceRoot),
     ],
@@ -161,8 +198,11 @@ export function createViteConfig(opts: ResolvedBuildOptions): InlineConfig {
       alias: resolveTsconfigPaths(opts.tsconfig, workspaceRoot),
     },
 
-    css: Object.keys(cssPreprocessorOptions).length
-      ? { preprocessorOptions: cssPreprocessorOptions }
+    css: (Object.keys(cssPreprocessorOptions).length || Object.keys(postcssPlugins).length)
+      ? {
+          preprocessorOptions: Object.keys(cssPreprocessorOptions).length ? cssPreprocessorOptions : undefined,
+          postcss: Object.keys(postcssPlugins).length ? { plugins: Object.values(postcssPlugins) } : undefined,
+        }
       : undefined,
 
     build: {
