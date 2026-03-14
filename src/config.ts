@@ -7,18 +7,39 @@ import type { ResolvedBuildOptions } from './workspace.js'
 import { htmlInjectPlugin, assetCopyPlugin } from './plugins.js'
 
 /**
- * Parse a tsconfig JSON file, stripping comments and trailing commas.
+ * Parse a tsconfig JSON file, stripping comments and trailing commas (JSONC).
+ * Uses a string-aware approach so that // or /* inside quoted strings are preserved.
  */
 function parseTsconfig(filePath: string): any {
   const raw = readFileSync(filePath, 'utf-8')
-  const stripped = raw
-    // Remove single-line comments
-    .replace(/\/\/.*$/gm, '')
-    // Remove multi-line comments
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    // Remove trailing commas before } or ]
-    .replace(/,\s*([\]}])/g, '$1')
-  return JSON.parse(stripped)
+  let result = ''
+  let i = 0
+  while (i < raw.length) {
+    // Skip double-quoted strings verbatim
+    if (raw[i] === '"') {
+      let j = i + 1
+      while (j < raw.length && raw[j] !== '"') {
+        if (raw[j] === '\\') j++ // skip escaped char
+        j++
+      }
+      result += raw.slice(i, j + 1)
+      i = j + 1
+    // Skip single-line comments
+    } else if (raw[i] === '/' && raw[i + 1] === '/') {
+      while (i < raw.length && raw[i] !== '\n') i++
+    // Skip multi-line comments
+    } else if (raw[i] === '/' && raw[i + 1] === '*') {
+      i += 2
+      while (i < raw.length && !(raw[i] === '*' && raw[i + 1] === '/')) i++
+      i += 2
+    } else {
+      result += raw[i]
+      i++
+    }
+  }
+  // Remove trailing commas before } or ]
+  result = result.replace(/,\s*([\]}])/g, '$1')
+  return JSON.parse(result)
 }
 
 /**
