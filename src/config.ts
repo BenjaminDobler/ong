@@ -5,6 +5,7 @@ import type { InlineConfig, Alias } from 'vite'
 import { angular } from '@oxc-angular/vite'
 import type { ResolvedBuildOptions } from './workspace.js'
 import { htmlInjectPlugin, assetCopyPlugin } from './plugins.js'
+import { templateAnnotatePlugin } from './template-annotate-plugin.js'
 
 /**
  * Parse a tsconfig JSON file, stripping comments and trailing commas (JSONC).
@@ -199,6 +200,7 @@ export function createViteConfig(opts: ResolvedBuildOptions): InlineConfig {
     logLevel: 'info',
 
     plugins: [
+      opts.annotateTemplates ? templateAnnotatePlugin() : null,
       htmlInjectPlugin(opts),
       ...angular({
         tsconfig: opts.tsconfig,
@@ -209,7 +211,7 @@ export function createViteConfig(opts: ResolvedBuildOptions): InlineConfig {
         angularVersion: detectAngularVersion(workspaceRoot),
       }),
       assetCopyPlugin(opts.assets, workspaceRoot, sourceRoot),
-    ],
+    ].filter(Boolean),
 
     // Global constant replacements (angular.json "define")
     ...(Object.keys(opts.define).length ? { define: opts.define } : {}),

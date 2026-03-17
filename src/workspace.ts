@@ -58,6 +58,8 @@ export interface ResolvedBuildOptions {
   poll: number
   /** Serve options */
   serve: { port?: number; open?: boolean; host?: string }
+  /** Annotate template elements with source-location data-elements-id attributes (for visual editing) */
+  annotateTemplates: boolean
 }
 
 export type AssetConfig = string | { glob: string; input: string; output?: string }
@@ -393,5 +395,6 @@ function resolveProjectOptions(
       open: opts.open ?? serveOpts.open ?? merged.open ?? false,
       host: opts.host ?? serveOpts.host,
     },
+    annotateTemplates: process.env['ADORABLE_ANNOTATE_TEMPLATES'] === 'true',
   }
 }

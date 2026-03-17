@@ -1,6 +1,6 @@
 {
   "name": "@richapps/ong",
-  "version": "0.1.8",
+  "version": "0.1.20",
   "description": "Angular CLI powered by Vite + OXC — blazing fast drop-in replacement for ng serve/build",
   "keywords": [
     "angular",
@@ -35,7 +35,8 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@oxc-angular/vite": "^0.0.17"
+    "@oxc-angular/vite": "^0.0.17",
+    "angular-html-parser": "^10.4.0"
   },
   "peerDependencies": {
     "vite": ">=8.0.0-beta.10"

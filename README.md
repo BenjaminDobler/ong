@@ -144,6 +144,96 @@ These `@angular/build:application` properties are **not currently handled** — 
 
 > SSR support is not planned — ong focuses on client-side Angular applications.
 
+## Template Annotations (Visual Editing)
+
+ong includes a built-in Vite plugin that annotates every HTML element in Angular templates with source-location metadata — without modifying source files on disk. This enables visual editing tools to map rendered DOM elements back to their exact template source.
+
+### How It Works
+
+When enabled, the plugin adds a short numeric `_ong` attribute to every template element at compile time. Rich metadata (file path, line, column, component info, bindings, text content type) is stored in a global `window.__ong_annotations` lookup table.
+
+```html
+<!-- Source file (untouched): -->
+<h3>Hello World</h3>
+
+<!-- Rendered DOM: -->
+<h3 _ong="42">Hello World</h3>
+```
+
+```javascript
+// In browser console:
+window.__ong_annotations[42]
+// → {
+//   file: "src/app/header/header.html",
+//   line: 3, col: 2,
+//   tag: "h3",
+//   component: "HeaderComponent",
+//   selector: "app-header",
+//   tsFile: "src/app/header/header.ts",
+//   parent: 38,
+//   inLoop: false,
+//   conditional: false,
+//   text: { hasText: true, type: "static", content: "Hello World" },
+//   bindings: { inputs: {}, outputs: {}, twoWay: {}, structural: [] }
+// }
+```
+
+### Enable
+
+Set the `ADORABLE_ANNOTATE_TEMPLATES` environment variable:
+
+```bash
+ADORABLE_ANNOTATE_TEMPLATES=true ong serve
+```
+
+### Metadata Fields
+
+Each annotation entry contains:
+
+| Field | Description |
+|---|---|
+| `file` | Relative path to the template file (from workspace root) |
+| `line` | 1-based line number in the template |
+| `col` | 0-based column number |
+| `tag` | HTML tag name |
+| `component` | Angular component class name |
+| `selector` | Component selector (e.g., `app-header`) |
+| `tsFile` | Relative path to the component `.ts` file |
+| `parent` | Annotation ID of the parent element (`null` for root) |
+| `inLoop` | `true` if inside a `@for` block |
+| `conditional` | `true` if inside a `@if` / `@switch` block |
+| `text.hasText` | Whether the element has direct text content |
+| `text.type` | `'static'` \| `'interpolated'` \| `'mixed'` \| `'none'` |
+| `text.content` | The raw text or `{{ expression }}` content |
+| `bindings.inputs` | Property bindings: `{ 'class.active': 'isActive' }` |
+| `bindings.outputs` | Event bindings: `{ 'click': 'onClick()' }` |
+| `bindings.twoWay` | Two-way bindings: `{ 'ngModel': 'name' }` |
+| `bindings.structural` | Structural directives: `['*ngIf="visible"']` |
+
+### Features
+
+- Works with **external templates** (`templateUrl`) and **inline templates** (`template: \`...\``)
+- Supports **any file naming convention** — `app.html`, `header.component.html`, etc.
+- **Paths are workspace-relative** — portable, no absolute paths leaked
+- **Survives HMR** — templates are re-annotated on file change
+- **Zero source file modification** — annotations exist only in the Vite pipeline
+- Uses `angular-html-parser` for accurate source spans
+
+### Programmatic Usage
+
+The plugin is also exported for use in custom Vite configs:
+
+```typescript
+import { templateAnnotatePlugin } from '@richapps/ong'
+
+export default {
+  plugins: [
+    templateAnnotatePlugin(),
+    // ... other plugins
+  ]
+}
+```
+
 ## Programmatic API
 
 ```typescript
