@@ -47,6 +47,8 @@ function parseArgs(argv: string[]): CliArgs {
       result.port = parseInt(next); i++
     } else if (arg === '--open' || arg === '-o') {
       result.open = true
+    } else if (arg.startsWith('--open=')) {
+      result.open = arg.split('=')[1] !== 'false'
     } else if (arg === '--host') {
       result.host = next; i++
     } else if (arg === '--watch' || arg === '-w') {
