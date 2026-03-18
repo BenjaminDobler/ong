@@ -94,6 +94,11 @@ export function htmlInjectPlugin(opts: ResolvedBuildOptions): Plugin {
           )
         }
 
+        // Inject custom HTML/scripts before </head> (e.g., dev tools, analytics, runtime instrumentation)
+        if (opts.injectHtml) {
+          result = result.replace('</head>', `${opts.injectHtml}\n</head>`)
+        }
+
         return result
       },
     },

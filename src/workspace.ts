@@ -1,5 +1,31 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { resolve, join, dirname, basename } from 'node:path'
+import { createRequire } from 'node:module'
+
+/**
+ * Resolve HTML content to inject into index.html.
+ * Supports ONG_INJECT_HTML (inline content) or ONG_INJECT_HTML_FILE (path to a JS module
+ * that exports RUNTIME_SCRIPTS).
+ */
+function resolveInjectHtml(): string | null {
+  // Inline HTML content
+  const inline = process.env['ONG_INJECT_HTML']
+  if (inline) return inline
+
+  // File path to a CommonJS module exporting RUNTIME_SCRIPTS
+  const filePath = process.env['ONG_INJECT_HTML_FILE']
+  if (filePath) {
+    try {
+      const _require = createRequire(import.meta.url)
+      const mod = _require(filePath)
+      return mod.RUNTIME_SCRIPTS || mod.default || null
+    } catch (e) {
+      console.warn(`[ong] Failed to load inject HTML from ${filePath}:`, (e as Error).message)
+    }
+  }
+
+  return null
+}
 
 // ═══════════════════════════════════════════════════════════════
 //  Types
@@ -58,8 +84,10 @@ export interface ResolvedBuildOptions {
   poll: number
   /** Serve options */
   serve: { port?: number; open?: boolean; host?: string }
-  /** Annotate template elements with source-location data-elements-id attributes (for visual editing) */
+  /** Annotate template elements with source-location metadata (for visual editing tools) */
   annotateTemplates: boolean
+  /** Raw HTML/script content to inject into index.html before </head> */
+  injectHtml: string | null
 }
 
 export type AssetConfig = string | { glob: string; input: string; output?: string }
@@ -403,6 +431,7 @@ function resolveProjectOptions(
       open: opts.open ?? serveOpts.open ?? merged.open ?? false,
       host: opts.host ?? serveOpts.host,
     },
-    annotateTemplates: process.env['ADORABLE_ANNOTATE_TEMPLATES'] === 'true',
+    annotateTemplates: process.env['ONG_ANNOTATE_TEMPLATES'] === 'true',
+    injectHtml: resolveInjectHtml(),
   }
 }

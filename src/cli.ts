@@ -1,3 +1,5 @@
+import { resolve } from 'node:path'
+import { createRequire } from 'node:module'
 import { createServer, build } from 'vite'
 import { resolveWorkspace, type ResolveOptions } from './workspace.js'
 import { createViteConfig } from './config.js'
@@ -17,6 +19,8 @@ interface CliArgs {
   host?: string
   watch?: boolean
   prebundleLibs?: boolean
+  annotateTemplates?: boolean
+  injectHtmlFile?: string
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -49,6 +53,12 @@ function parseArgs(argv: string[]): CliArgs {
       result.watch = true
     } else if (arg === '--prebundle-libs') {
       result.prebundleLibs = true
+    } else if (arg === '--annotate-templates') {
+      result.annotateTemplates = true
+    } else if (arg === '--inject-html-file') {
+      result.injectHtmlFile = next; i++
+    } else if (arg.startsWith('--inject-html-file=')) {
+      result.injectHtmlFile = arg.split('=').slice(1).join('=')
     } else if (arg === '--help' || arg === '-h') {
       return { command: 'help' }
     } else if (!arg.startsWith('-') && !result.project) {
@@ -85,6 +95,19 @@ async function main() {
   }
 
   const buildOpts = resolveWorkspace(cwd, resolveOpts)
+
+  // CLI flags override env vars for annotation and HTML injection
+  if (args.annotateTemplates) buildOpts.annotateTemplates = true
+  if (args.injectHtmlFile) {
+    try {
+      const _require = createRequire(import.meta.url)
+      const mod = _require(resolve(args.injectHtmlFile))
+      buildOpts.injectHtml = mod.RUNTIME_SCRIPTS || mod.default || null
+    } catch (e) {
+      console.warn(`[ong] Failed to load --inject-html-file ${args.injectHtmlFile}:`, (e as Error).message)
+    }
+  }
+
   banner(args.command, buildOpts.projectName, buildOpts.configName)
 
   let viteConfig = createViteConfig(buildOpts)

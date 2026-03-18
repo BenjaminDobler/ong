@@ -1,6 +1,6 @@
 {
   "name": "@richapps/ong",
-  "version": "0.1.20",
+  "version": "0.1.27",
   "description": "Angular CLI powered by Vite + OXC — blazing fast drop-in replacement for ng serve/build",
   "keywords": [
     "angular",
