@@ -129,7 +129,7 @@ function escapeRegex(str: string): string {
 /**
  * Detect Angular version from the workspace's @angular/core package.json.
  */
-function detectAngularVersion(workspaceRoot: string): { major: number; minor: number; patch: number } | undefined {
+export function detectAngularVersion(workspaceRoot: string): { major: number; minor: number; patch: number } | undefined {
   try {
     const pkgPath = join(workspaceRoot, 'node_modules/@angular/core/package.json')
     if (!existsSync(pkgPath)) return undefined

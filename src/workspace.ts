@@ -130,28 +130,36 @@ interface DetectedWorkspace {
  * - Auto-detection via --project pointing to an Nx app directory
  */
 export function detectWorkspace(cwd: string, projectHint?: string): DetectedWorkspace {
-  // If projectHint points to a specific project.json or directory
+  // If projectHint points to a specific project.json or directory.
+  // Try relative to cwd first, then relative to workspace root (so the command
+  // works regardless of which subdirectory the user runs it from).
   if (projectHint) {
-    const hintPath = resolve(cwd, projectHint)
+    const wsRoot = findWorkspaceRoot(cwd)
+    const candidateBases = [cwd]
+    if (wsRoot && wsRoot !== cwd) candidateBases.push(wsRoot)
 
-    // Direct path to project.json
-    if (hintPath.endsWith('project.json') && existsSync(hintPath)) {
-      return {
-        type: 'nx-project',
-        root: findWorkspaceRoot(dirname(hintPath)) ?? cwd,
-        data: JSON.parse(readFileSync(hintPath, 'utf-8')),
-        projectJsonPath: hintPath,
+    for (const base of candidateBases) {
+      const hintPath = resolve(base, projectHint)
+
+      // Direct path to project.json
+      if (hintPath.endsWith('project.json') && existsSync(hintPath)) {
+        return {
+          type: 'nx-project',
+          root: findWorkspaceRoot(dirname(hintPath)) ?? cwd,
+          data: JSON.parse(readFileSync(hintPath, 'utf-8')),
+          projectJsonPath: hintPath,
+        }
       }
-    }
 
-    // Directory containing project.json
-    const dirProjectJson = join(hintPath, 'project.json')
-    if (existsSync(dirProjectJson)) {
-      return {
-        type: 'nx-project',
-        root: findWorkspaceRoot(hintPath) ?? cwd,
-        data: JSON.parse(readFileSync(dirProjectJson, 'utf-8')),
-        projectJsonPath: dirProjectJson,
+      // Directory containing project.json
+      const dirProjectJson = join(hintPath, 'project.json')
+      if (existsSync(dirProjectJson)) {
+        return {
+          type: 'nx-project',
+          root: findWorkspaceRoot(hintPath) ?? cwd,
+          data: JSON.parse(readFileSync(dirProjectJson, 'utf-8')),
+          projectJsonPath: dirProjectJson,
+        }
       }
     }
   }
