@@ -1,7 +1,7 @@
 import type { Plugin } from 'vite'
 import { parse } from 'angular-html-parser'
-import { readFileSync, utimesSync } from 'node:fs'
-import { resolve, dirname, relative } from 'node:path'
+import { relative, dirname, resolve } from 'node:path'
+import { readFileSync } from 'node:fs'
 
 export interface AnnotationEntry {
   file: string
@@ -27,31 +27,122 @@ export interface AnnotationEntry {
   }
 }
 
+interface ComponentInfo { className: string; selector: string }
+
 /**
- * Vite plugin that annotates Angular component templates with source-location
- * metadata. Each HTML element gets a short numeric `_ong` attribute.
- * The full metadata is stored in `window.__ong_annotations`.
- *
- * This plugin works by running AFTER OXC's angular plugin in a post-transform phase.
- * It doesn't modify templates directly — instead, it wraps OXC's angular plugin
- * to intercept and annotate templates during resource resolution.
+ * Global annotation state — shared between the templateTransform callback
+ * and the post-transform plugin hook that appends registration code.
  */
-export function templateAnnotatePlugin(): Plugin {
+let nextId = 1
+// Keyed by template absolute path → array of { id, entry } collected during templateTransform
+const pendingAnnotations = new Map<string, { id: number; entry: AnnotationEntry }[]>()
+// Template absolute path → component .ts file that owns it
+const templateToTsPath = new Map<string, string>()
+
+/**
+ * Standalone function that annotates a template's HTML content.
+ * Used as the `templateTransform` callback for @oxc-angular/vite.
+ *
+ * OXC calls this both on initial load and on HMR re-reads, so
+ * annotations stay in sync without any custom HMR handling.
+ */
+export function annotateTemplateContent(
+  html: string,
+  filePath: string,
+  workspaceRoot: string,
+): string {
+  const relPath = relative(workspaceRoot, filePath)
+
+  // Find the component .ts file that owns this template
+  // (populated by the plugin's transform hook scanning .ts files)
+  const tsPath = templateToTsPath.get(filePath)
+  const tsRelPath = tsPath ? relative(workspaceRoot, tsPath) : relPath.replace(/\.html$/, '.ts')
+
+  // Read component info from the .ts file if available
+  let componentInfo: ComponentInfo = { className: '', selector: '' }
+  if (tsPath) {
+    try {
+      const tsCode = readFileSync(tsPath, 'utf-8')
+      componentInfo = extractComponentInfo(tsCode)
+    } catch { /* ignore */ }
+  }
+
+  const annotations: { id: number; entry: AnnotationEntry }[] = []
+
+  let parsed
+  try {
+    parsed = parse(html, { canSelfClose: true, allowHtmComponentClosingTags: true })
+  } catch {
+    return html
+  }
+
+  const insertions: { offset: number; attr: string }[] = []
+
+  function walk(nodes: any[], parentId: number | null, inLoop: boolean, conditional: boolean) {
+    for (const node of nodes) {
+      if (node.type === 'block') {
+        const blockName = node.name || ''
+        const isLoop = blockName === 'for'
+        const isCond = blockName === 'if' || blockName === 'switch' || blockName === 'case' || blockName === 'else'
+        if (node.children) walk(node.children, parentId, inLoop || isLoop, conditional || isCond)
+        continue
+      }
+      if (!node.name || !node.startSourceSpan) continue
+
+      const line = node.sourceSpan.start.line + 1
+      const col = node.sourceSpan.start.col
+      const elemId = nextId++
+      const textInfo = extractTextInfo(node)
+      const bindings = extractBindings(node)
+
+      const entry: AnnotationEntry = {
+        file: relPath, line, col,
+        tag: node.name,
+        component: componentInfo.className,
+        selector: componentInfo.selector,
+        tsFile: tsRelPath,
+        parent: parentId, inLoop, conditional,
+        text: textInfo, bindings,
+      }
+      annotations.push({ id: elemId, entry })
+
+      const tagEnd = node.startSourceSpan.end.offset
+      const isSelfClosing = html.charAt(tagEnd - 2) === '/'
+      const insertPos = isSelfClosing ? tagEnd - 2 : tagEnd - 1
+      insertions.push({ offset: insertPos, attr: ` _ong="${elemId}"` })
+
+      if (node.children) walk(node.children, elemId, inLoop, conditional)
+    }
+  }
+
+  walk(parsed.rootNodes, null, false, false)
+  if (insertions.length === 0) return html
+
+  // Store annotations for the post-transform hook to pick up
+  pendingAnnotations.set(filePath, annotations)
+
+  let result = html
+  for (const ins of insertions.reverse()) {
+    result = result.slice(0, ins.offset) + ins.attr + result.slice(ins.offset)
+  }
+  return result
+}
+
+/**
+ * Vite plugin that works alongside OXC's templateTransform to:
+ * 1. Inject `window.__ong_annotations = {}` into index.html
+ * 2. Scan .ts files to map templateUrl → .ts file path (for component info lookup)
+ * 3. Append annotation registrations to compiled component .ts output (post-transform)
+ */
+export function templateAnnotatePlugin(workspaceRootOverride?: string): Plugin {
   let workspaceRoot = ''
-  let nextId = 1
-  let viteServer: any = null
-  // Track template file → component .ts file path for HMR
-  const templateToTsPath = new Map<string, string>()
-  // Track component .ts file → class name for triggering Angular HMR events
-  const tsPathToClassName = new Map<string, string>()
 
   return {
     name: 'ong:template-annotate',
-    enforce: 'pre',
 
     configResolved(config) {
       const fsAllow = (config.server?.fs?.allow ?? []) as string[]
-      workspaceRoot = fsAllow[0] || resolve(config.root, '..')
+      workspaceRoot = workspaceRootOverride || fsAllow[0] || resolve(config.root, '..')
     },
 
     transformIndexHtml: {
@@ -68,180 +159,73 @@ export function templateAnnotatePlugin(): Plugin {
       },
     },
 
+    // Pre-transform: scan .ts files to populate templateToTsPath map
+    // so annotateTemplateContent can look up component info
     transform: {
       order: 'pre' as const,
-      filter: {
-        id: /\.tsx?$/,
-      },
+      filter: { id: /\.tsx?$/ },
       handler(code: string, id: string) {
         if (id.includes('node_modules')) return null
         if (!code.includes('@Component')) return null
 
-        try {
-          let result = code
-          let modified = false
-          const localAnnotations: AnnotationEntry[] = []
-          const localIds: number[] = []
-
-          const componentInfo = extractComponentInfo(code)
-          const tsRelPath = relative(workspaceRoot, id)
-          if (componentInfo.className) {
-            tsPathToClassName.set(id, componentInfo.className)
-          }
-
-          // Handle external templates (templateUrl) — annotate and inline
-          const templateUrlRegex = /templateUrl\s*:\s*['"`]([^'"`]+)['"`]/g
-          let match
-          while ((match = templateUrlRegex.exec(code)) !== null) {
-            const templateUrl = match[1]
-            const templatePath = resolve(dirname(id), templateUrl)
-
-            let templateContent: string
-            try {
-              templateContent = readFileSync(templatePath, 'utf-8')
-            } catch {
-              continue
-            }
-
-            templateToTsPath.set(templatePath, id)
-
-            const relPath = relative(workspaceRoot, templatePath)
-            const annotated = annotateTemplate(templateContent, relPath, tsRelPath, 0, componentInfo, localAnnotations, localIds)
-            if (annotated !== templateContent) {
-              const fullMatch = match[0]
-              const replacement = `template: \`${escapeTemplateLiteral(annotated)}\``
-              result = result.replace(fullMatch, replacement)
-              modified = true
-            }
-          }
-
-          // Handle inline templates (template: `...`)
-          const inlineBacktickRegex = /template\s*:\s*`([\s\S]*?)`/g
-          while ((match = inlineBacktickRegex.exec(result)) !== null) {
-            if (modified && match[0].includes('_ong=')) continue
-            const templateContent = match[1]
-            const unescaped = templateContent.replace(/\\`/g, '`').replace(/\\\$/g, '$')
-            const templateStartOffset = match.index + match[0].indexOf(match[1])
-            const linesBeforeTemplate = result.slice(0, templateStartOffset).split('\n').length - 1
-            const annotated = annotateTemplate(unescaped, tsRelPath, tsRelPath, linesBeforeTemplate, componentInfo, localAnnotations, localIds)
-            if (annotated !== unescaped) {
-              const escaped = escapeTemplateLiteral(annotated)
-              result = result.slice(0, match.index) +
-                `template: \`${escaped}\`` +
-                result.slice(match.index + match[0].length)
-              modified = true
-            }
-          }
-
-          if (!modified) return null
-
-          const registrations = localAnnotations
-            .map((a, i) => `  w[${localIds[i]}] = ${JSON.stringify(a)};`)
-            .join('\n')
-
-          result += `\n;(function() {\n  var w = (window.__ong_annotations = window.__ong_annotations || {});\n${registrations}\n})();\n`
-
-          return { code: result, map: null }
-        } catch {
-          return null
+        // Register templateUrl → ts path mappings
+        const templateUrlRegex = /templateUrl\s*:\s*['"`]([^'"`]+)['"`]/g
+        let match
+        while ((match = templateUrlRegex.exec(code)) !== null) {
+          const templatePath = resolve(dirname(id), match[1])
+          templateToTsPath.set(templatePath, id)
         }
+
+        return null // Don't modify the code — OXC handles template resolution
       },
     },
-
-    // Store server reference so we can add files to its watcher during transform
-    configureServer(server) {
-      viteServer = server
-    },
-
-    // When a template file changes, find the parent .ts module and trigger its re-transform.
-    handleHotUpdate({ file }: any) {
-      const tsPath = templateToTsPath.get(file)
-      if (tsPath) {
-        // Touch the .ts file (update its mtime without changing content).
-        // This triggers OXC's own transform + HMR pipeline for the component,
-        // which re-runs our pre-transform (re-reads template from disk with
-        // fresh content) and then OXC compiles + sends angular:component-update.
-        console.log('[ong:annotate] HMR: template changed, touching .ts file:', tsPath)
-        const now = new Date()
-        try { utimesSync(tsPath, now, now) } catch { /* ignore */ }
-        return []
-      }
-      if (file?.endsWith('.html') && !file.includes('index.html')) {
-        return []
-      }
-    },
-  }
-
-  function annotateTemplate(
-    html: string,
-    templateRelPath: string,
-    tsRelPath: string,
-    lineOffset: number,
-    componentInfo: ComponentInfo,
-    outAnnotations: AnnotationEntry[],
-    outIds: number[],
-  ): string {
-    let parsed
-    try {
-      parsed = parse(html, {
-        canSelfClose: true,
-        allowHtmComponentClosingTags: true,
-      })
-    } catch {
-      return html
-    }
-
-    const insertions: { offset: number; attr: string }[] = []
-
-    function walk(nodes: any[], parentId: number | null, inLoop: boolean, conditional: boolean) {
-      for (const node of nodes) {
-        if (node.type === 'block') {
-          const blockName = node.name || ''
-          const isLoop = blockName === 'for'
-          const isCond = blockName === 'if' || blockName === 'switch' || blockName === 'case' || blockName === 'else'
-          if (node.children) walk(node.children, parentId, inLoop || isLoop, conditional || isCond)
-          continue
-        }
-        if (!node.name || !node.startSourceSpan) continue
-
-        const line = node.sourceSpan.start.line + 1 + lineOffset
-        const col = node.sourceSpan.start.col
-        const elemId = nextId++
-        const textInfo = extractTextInfo(node)
-        const bindings = extractBindings(node)
-
-        outAnnotations.push({
-          file: templateRelPath, line, col,
-          tag: node.name,
-          component: componentInfo.className,
-          selector: componentInfo.selector,
-          tsFile: tsRelPath,
-          parent: parentId, inLoop, conditional,
-          text: textInfo, bindings,
-        })
-        outIds.push(elemId)
-
-        const tagEnd = node.startSourceSpan.end.offset
-        const isSelfClosing = html.charAt(tagEnd - 2) === '/'
-        const insertPos = isSelfClosing ? tagEnd - 2 : tagEnd - 1
-        insertions.push({ offset: insertPos, attr: ` _ong="${elemId}"` })
-
-        if (node.children) walk(node.children, elemId, inLoop, conditional)
-      }
-    }
-
-    walk(parsed.rootNodes, null, false, false)
-    if (insertions.length === 0) return html
-
-    let result = html
-    for (const ins of insertions.reverse()) {
-      result = result.slice(0, ins.offset) + ins.attr + result.slice(ins.offset)
-    }
-    return result
   }
 }
 
-interface ComponentInfo { className: string; selector: string }
+/**
+ * Post-transform plugin that appends annotation registrations to compiled
+ * component output. Runs AFTER OXC compilation.
+ */
+export function templateAnnotatePostPlugin(): Plugin {
+  return {
+    name: 'ong:template-annotate-post',
+
+    transform: {
+      order: 'post' as const,
+      filter: { id: /\.tsx?$/ },
+      handler(code: string, id: string) {
+        if (id.includes('node_modules')) return null
+
+        // Find any pending annotations for templates owned by this .ts file
+        const ownedTemplates: string[] = []
+        for (const [templatePath, tsPath] of templateToTsPath.entries()) {
+          if (tsPath === id) ownedTemplates.push(templatePath)
+        }
+
+        if (ownedTemplates.length === 0) return null
+
+        const allAnnotations: { id: number; entry: AnnotationEntry }[] = []
+        for (const tp of ownedTemplates) {
+          const anns = pendingAnnotations.get(tp)
+          if (anns) {
+            allAnnotations.push(...anns)
+            pendingAnnotations.delete(tp)
+          }
+        }
+
+        if (allAnnotations.length === 0) return null
+
+        const registrations = allAnnotations
+          .map(a => `  w[${a.id}] = ${JSON.stringify(a.entry)};`)
+          .join('\n')
+
+        const result = code + `\n;(function() {\n  var w = (window.__ong_annotations = window.__ong_annotations || {});\n${registrations}\n})();\n`
+
+        return { code: result, map: null }
+      },
+    },
+  }
+}
 
 function extractComponentInfo(code: string): ComponentInfo {
   const selectorMatch = code.match(/selector\s*:\s*['"`]([^'"`]+)['"`]/)
@@ -282,8 +266,4 @@ function extractBindings(node: any): AnnotationEntry['bindings'] {
     else if (n.startsWith('*')) structural.push(`${n}="${v}"`)
   }
   return { inputs, outputs, twoWay, structural }
-}
-
-function escapeTemplateLiteral(str: string): string {
-  return str.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$')
 }
