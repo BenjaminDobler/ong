@@ -33,7 +33,21 @@ interface ComponentInfo { className: string; selector: string }
  * Global annotation state — shared between the templateTransform callback
  * and the post-transform plugin hook that appends registration code.
  */
-let nextId = 1
+// Per-file ID bases: each file gets a stable base so IDs are deterministic across HMR
+const fileIdBases = new Map<string, number>()
+let nextFileBase = 0
+const FILE_ID_SLOTS = 10000 // max elements per template file
+
+function getFileIdBase(filePath: string): number {
+  let base = fileIdBases.get(filePath)
+  if (base === undefined) {
+    base = nextFileBase
+    nextFileBase += FILE_ID_SLOTS
+    fileIdBases.set(filePath, base)
+  }
+  return base
+}
+
 // Keyed by template absolute path → array of { id, entry } collected during templateTransform
 const pendingAnnotations = new Map<string, { id: number; entry: AnnotationEntry }[]>()
 // Template absolute path → component .ts file that owns it
@@ -45,6 +59,9 @@ const templateToTsPath = new Map<string, string>()
  *
  * OXC calls this both on initial load and on HMR re-reads, so
  * annotations stay in sync without any custom HMR handling.
+ *
+ * Uses per-file deterministic IDs so that HMR re-processing produces
+ * the same IDs, keeping window.__ong_annotations in sync with the DOM.
  */
 export function annotateTemplateContent(
   html: string,
@@ -54,7 +71,6 @@ export function annotateTemplateContent(
   const relPath = relative(workspaceRoot, filePath)
 
   // Find the component .ts file that owns this template
-  // (populated by the plugin's transform hook scanning .ts files)
   const tsPath = templateToTsPath.get(filePath)
   const tsRelPath = tsPath ? relative(workspaceRoot, tsPath) : relPath.replace(/\.html$/, '.ts')
 
@@ -77,6 +93,9 @@ export function annotateTemplateContent(
   }
 
   const insertions: { offset: number; attr: string }[] = []
+  // Use per-file deterministic ID base — resets to same base on each call
+  const idBase = getFileIdBase(filePath)
+  let localIndex = 0
 
   function walk(nodes: any[], parentId: number | null, inLoop: boolean, conditional: boolean) {
     for (const node of nodes) {
@@ -91,7 +110,7 @@ export function annotateTemplateContent(
 
       const line = node.sourceSpan.start.line + 1
       const col = node.sourceSpan.start.col
-      const elemId = nextId++
+      const elemId = idBase + (++localIndex)
       const textInfo = extractTextInfo(node)
       const bindings = extractBindings(node)
 
@@ -130,15 +149,16 @@ export function annotateTemplateContent(
 
 /**
  * Vite plugin that works alongside OXC's templateTransform to:
- * 1. Inject `window.__ong_annotations = {}` into index.html
+ * 1. Inject `window.__ong_annotations = {}` + HMR listener into index.html
  * 2. Scan .ts files to map templateUrl → .ts file path (for component info lookup)
- * 3. Append annotation registrations to compiled component .ts output (post-transform)
+ * 3. Prevent Vite full-reloads on template .html changes (OXC handles HMR)
  */
 export function templateAnnotatePlugin(workspaceRootOverride?: string): Plugin {
   let workspaceRoot = ''
 
   return {
     name: 'ong:template-annotate',
+    enforce: 'pre',
 
     configResolved(config) {
       const fsAllow = (config.server?.fs?.allow ?? []) as string[]
@@ -163,22 +183,25 @@ export function templateAnnotatePlugin(workspaceRootOverride?: string): Plugin {
     // so annotateTemplateContent can look up component info
     transform: {
       order: 'pre' as const,
-      filter: { id: /\.tsx?$/ },
+      filter: { id: /\.tsx?/ },
       handler(code: string, id: string) {
         if (id.includes('node_modules')) return null
         if (!code.includes('@Component')) return null
+
+        const cleanId = id.replace(/\?.*$/, '')
 
         // Register templateUrl → ts path mappings
         const templateUrlRegex = /templateUrl\s*:\s*['"`]([^'"`]+)['"`]/g
         let match
         while ((match = templateUrlRegex.exec(code)) !== null) {
-          const templatePath = resolve(dirname(id), match[1])
-          templateToTsPath.set(templatePath, id)
+          const templatePath = resolve(dirname(cleanId), match[1])
+          templateToTsPath.set(templatePath, cleanId)
         }
 
         return null // Don't modify the code — OXC handles template resolution
       },
     },
+
   }
 }
 
@@ -189,17 +212,20 @@ export function templateAnnotatePlugin(workspaceRootOverride?: string): Plugin {
 export function templateAnnotatePostPlugin(): Plugin {
   return {
     name: 'ong:template-annotate-post',
+    enforce: 'post',
 
     transform: {
-      order: 'post' as const,
-      filter: { id: /\.tsx?$/ },
+      filter: { id: /\.tsx?/ },
       handler(code: string, id: string) {
         if (id.includes('node_modules')) return null
+
+        // Strip query params for consistent matching
+        const cleanId = id.replace(/\?.*$/, '')
 
         // Find any pending annotations for templates owned by this .ts file
         const ownedTemplates: string[] = []
         for (const [templatePath, tsPath] of templateToTsPath.entries()) {
-          if (tsPath === id) ownedTemplates.push(templatePath)
+          if (tsPath === cleanId) ownedTemplates.push(templatePath)
         }
 
         if (ownedTemplates.length === 0) return null
@@ -209,7 +235,9 @@ export function templateAnnotatePostPlugin(): Plugin {
           const anns = pendingAnnotations.get(tp)
           if (anns) {
             allAnnotations.push(...anns)
-            pendingAnnotations.delete(tp)
+            // Don't delete — OXC caches templates, so on subsequent transform
+            // passes (e.g. after dep optimization reload) templateTransform won't
+            // be called again. Keep annotations for re-use.
           }
         }
 

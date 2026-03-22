@@ -41,6 +41,11 @@ export function htmlInjectPlugin(opts: ResolvedBuildOptions): Plugin {
       handler(html: string) {
         let result = html
 
+        // Enable Angular HMR in dev mode
+        if (!opts.optimization) {
+          result = result.replace('<head>', `<head>\n  <script>globalThis._enableHmr = true;</script>`)
+        }
+
         // Inject/update base href if not default
         if (opts.baseHref && opts.baseHref !== '/') {
           if (result.includes('<base href=')) {
@@ -101,6 +106,43 @@ export function htmlInjectPlugin(opts: ResolvedBuildOptions): Plugin {
 
         return result
       },
+    },
+  }
+}
+
+/**
+ * Fixes an OXC bug where template/style changes are not reflected after a full
+ * page reload. OXC's custom fs.watch clears its own resourceCache but never
+ * calls server.moduleGraph.invalidateModule(), so Vite's transform cache goes
+ * stale. This plugin intercepts OXC's HMR WS event and defers module
+ * invalidation so live HMR isn't disrupted while future full reloads pick up
+ * the fresh transform.
+ */
+export function hmrFixPlugin(): Plugin {
+  return {
+    name: 'ong:hmr-fix',
+    enforce: 'post',
+    configureServer(server) {
+      const origSend = server.ws.send.bind(server.ws)
+      server.ws.send = (...args: any[]) => {
+        // Send the HMR event first so OXC's live update isn't disrupted
+        const result = (origSend as any)(...args)
+        const data = args[0]
+        if (data?.event === 'angular:component-update' && data?.data?.id) {
+          // Defer module invalidation — only needed so future full reloads
+          // pick up the new transform instead of serving stale cache
+          setTimeout(() => {
+            const componentId = decodeURIComponent(data.data.id)
+            const atIndex = componentId.indexOf('@')
+            const filePath = atIndex !== -1 ? componentId.slice(0, atIndex) : componentId
+            const mod = server.moduleGraph.getModuleById(filePath)
+            if (mod) {
+              server.moduleGraph.invalidateModule(mod)
+            }
+          }, 50)
+        }
+        return result
+      }
     },
   }
 }

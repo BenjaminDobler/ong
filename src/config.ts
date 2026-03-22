@@ -4,7 +4,7 @@ import { createRequire } from 'node:module'
 import type { InlineConfig, Alias } from 'vite'
 import { angular } from '@oxc-angular/vite'
 import type { ResolvedBuildOptions } from './workspace.js'
-import { htmlInjectPlugin, assetCopyPlugin } from './plugins.js'
+import { htmlInjectPlugin, assetCopyPlugin, hmrFixPlugin } from './plugins.js'
 import { templateAnnotatePlugin, templateAnnotatePostPlugin, annotateTemplateContent } from './template-annotate-plugin.js'
 
 /**
@@ -214,6 +214,7 @@ export function createViteConfig(opts: ResolvedBuildOptions): InlineConfig {
           : undefined,
       }),
       opts.annotateTemplates ? templateAnnotatePostPlugin() : null,
+      !opts.optimization ? hmrFixPlugin() : null,
       assetCopyPlugin(opts.assets, workspaceRoot, sourceRoot),
     ].filter(Boolean),
 
@@ -240,7 +241,6 @@ export function createViteConfig(opts: ResolvedBuildOptions): InlineConfig {
       modulePreload: { polyfill: false },
       watch: opts.watch ? {} : null,
       rollupOptions: {
-        // Use index.html as entry so Vite processes HTML transforms (script/style injection)
         input: resolve(workspaceRoot, sourceRoot, 'index.html'),
         external: opts.externalDependencies.length ? opts.externalDependencies : undefined,
       },
