@@ -111,37 +111,63 @@ export function htmlInjectPlugin(opts: ResolvedBuildOptions): Plugin {
 }
 
 /**
- * Fixes an OXC bug where template/style changes are not reflected after a full
- * page reload. OXC's custom fs.watch clears its own resourceCache but never
- * calls server.moduleGraph.invalidateModule(), so Vite's transform cache goes
- * stale. This plugin intercepts OXC's HMR WS event and defers module
- * invalidation so live HMR isn't disrupted while future full reloads pick up
- * the fresh transform.
+ * Fixes two OXC HMR bugs:
+ *
+ * 1. Template/style changes trigger handleHotUpdate for the owning .ts file
+ *    (via Vite's module dependency tracking), and OXC's handleHotUpdate sends
+ *    a full-reload for any component .ts change. This plugin runs BEFORE OXC
+ *    and blocks the spurious handleHotUpdate by returning [] for .ts files
+ *    that just had a template/style HMR update.
+ *
+ * 2. OXC's fs.watch clears its own resourceCache but never invalidates Vite's
+ *    transform cache, so full page reloads serve stale output. We clear the
+ *    module's transformResult directly.
+ *
+ * IMPORTANT: This plugin must be placed BEFORE the angular() plugins in the
+ * Vite plugin array so its handleHotUpdate runs first.
  */
 export function hmrFixPlugin(): Plugin {
+  // Track component files that just received a template/style HMR update
+  const recentHmrUpdates = new Set<string>()
+
   return {
     name: 'ong:hmr-fix',
-    enforce: 'post',
+    enforce: 'pre',
     configureServer(server) {
       const origSend = server.ws.send.bind(server.ws)
       server.ws.send = (...args: any[]) => {
-        // Send the HMR event first so OXC's live update isn't disrupted
-        const result = (origSend as any)(...args)
         const data = args[0]
+        // Suppress full-reload for components that just had a template/style HMR update.
+        // OXC's handleHotUpdate sends full-reload for .ts component files, but
+        // the .ts file didn't actually change — it was triggered by module graph
+        // invalidation from the template change.
+        if (data?.type === 'full-reload' && typeof data?.path === 'string' && recentHmrUpdates.has(data.path)) {
+          return // suppress — HMR already handled the template/style change
+        }
+        const result = (origSend as any)(...args)
         if (data?.event === 'angular:component-update' && data?.data?.id) {
-          // Defer module invalidation — only needed so future full reloads
-          // pick up the new transform instead of serving stale cache
-          setTimeout(() => {
-            const componentId = decodeURIComponent(data.data.id)
-            const atIndex = componentId.indexOf('@')
-            const filePath = atIndex !== -1 ? componentId.slice(0, atIndex) : componentId
-            const mod = server.moduleGraph.getModuleById(filePath)
-            if (mod) {
-              server.moduleGraph.invalidateModule(mod)
-            }
-          }, 50)
+          const componentId = decodeURIComponent(data.data.id)
+          const atIndex = componentId.indexOf('@')
+          const filePath = atIndex !== -1 ? componentId.slice(0, atIndex) : componentId
+
+          // Track this component so ws.send can suppress OXC's spurious full-reload
+          recentHmrUpdates.add(filePath)
+          setTimeout(() => recentHmrUpdates.delete(filePath), 2000)
+
+          // Clear Vite's cached transform so full reloads re-transform the module
+          const mod = server.moduleGraph.getModuleById(filePath)
+          if (mod) {
+            mod.transformResult = null
+          }
         }
         return result
+      }
+    },
+    handleHotUpdate(ctx) {
+      // Return [] to clear modules list (doesn't stop OXC's handleHotUpdate
+      // from running, but the ws.send suppression above catches its full-reload)
+      if (/\.tsx?$/.test(ctx.file) && recentHmrUpdates.has(ctx.file)) {
+        return []
       }
     },
   }

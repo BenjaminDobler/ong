@@ -202,6 +202,8 @@ export function createViteConfig(opts: ResolvedBuildOptions): InlineConfig {
 
     plugins: [
       typeExportFixPlugin(),
+      // hmrFixPlugin must come BEFORE angular() so its handleHotUpdate runs first
+      !opts.optimization ? hmrFixPlugin() : null,
       opts.annotateTemplates ? templateAnnotatePlugin(workspaceRoot) : null,
       htmlInjectPlugin(opts),
       ...angular({
@@ -216,7 +218,6 @@ export function createViteConfig(opts: ResolvedBuildOptions): InlineConfig {
           : undefined,
       }),
       opts.annotateTemplates ? templateAnnotatePostPlugin() : null,
-      !opts.optimization ? hmrFixPlugin() : null,
       assetCopyPlugin(opts.assets, workspaceRoot, sourceRoot),
     ].filter(Boolean),
 
