@@ -1,5 +1,5 @@
-import { existsSync, cpSync, mkdirSync } from 'node:fs'
-import { resolve, relative, join } from 'node:path'
+import { existsSync, cpSync, mkdirSync, readdirSync, createReadStream } from 'node:fs'
+import { resolve, relative, join, extname } from 'node:path'
 import type { Plugin } from 'vite'
 import type { ResolvedBuildOptions, AssetConfig } from './workspace.js'
 
@@ -157,6 +157,57 @@ export function assetCopyPlugin(
 ): Plugin {
   return {
     name: 'ong:assets',
+
+    // During dev, serve assets from their source input directories
+    configureServer(server) {
+      // Build a list of (urlPrefix → inputDir, glob) mappings for object-style assets
+      const mappings: { urlPrefix: string; inputDir: string; glob: string }[] = []
+      for (const asset of assets) {
+        if (typeof asset === 'string' || !asset?.input) continue
+        const inputDir = resolve(workspaceRoot, asset.input)
+        const urlPrefix = '/' + (asset.output ?? '').replace(/^\//, '')
+        mappings.push({ urlPrefix, inputDir, glob: asset.glob ?? '**/*' })
+      }
+      if (mappings.length === 0) return
+
+      const globToRegex = (g: string) =>
+        new RegExp('^' + g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*') + '$')
+
+      const MIME: Record<string, string> = {
+        '.json': 'application/json',
+        '.jsonc': 'application/json',
+        '.js': 'application/javascript',
+        '.css': 'text/css',
+        '.html': 'text/html',
+        '.svg': 'image/svg+xml',
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.woff': 'font/woff',
+        '.woff2': 'font/woff2',
+        '.ttf': 'font/ttf',
+      }
+
+      server.middlewares.use((req, res, next) => {
+        const url = req.url?.split('?')[0] ?? ''
+        for (const { urlPrefix, inputDir, glob } of mappings) {
+          if (!url.startsWith(urlPrefix)) continue
+          const rel = url.slice(urlPrefix.length).replace(/^\//, '')
+          if (!rel) continue
+          const re = globToRegex(glob)
+          const fileName = rel.split('/').pop() ?? ''
+          if (!re.test(fileName) && !re.test(rel)) continue
+          const filePath = join(inputDir, rel)
+          if (!existsSync(filePath)) continue
+          const mime = MIME[extname(filePath)] ?? 'application/octet-stream'
+          res.setHeader('Content-Type', mime)
+          createReadStream(filePath).pipe(res)
+          return
+        }
+        next()
+      })
+    },
+
     writeBundle(bundleOpts) {
       const outDir = bundleOpts.dir || resolve(workspaceRoot, 'dist')
 
@@ -172,7 +223,31 @@ export function assetCopyPlugin(
           if (existsSync(inputDir)) {
             const outputDir = join(outDir, asset.output || '')
             mkdirSync(outputDir, { recursive: true })
-            cpSync(inputDir, outputDir, { recursive: true })
+            if (!asset.glob || asset.glob === '**/*') {
+              // No glob filter — copy contents of inputDir into outputDir
+              for (const entry of readdirSync(inputDir, { withFileTypes: true })) {
+                cpSync(join(inputDir, entry.name), join(outputDir, entry.name), { recursive: true })
+              }
+            } else {
+              // Glob filter — match files in inputDir against the pattern
+              const globToRegex = (g: string) =>
+                new RegExp('^' + g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*') + '$')
+              const re = globToRegex(asset.glob)
+              const walk = (dir: string) => {
+                for (const entry of readdirSync(dir, { withFileTypes: true })) {
+                  const abs = join(dir, entry.name)
+                  const rel = relative(inputDir, abs)
+                  if (entry.isDirectory()) {
+                    walk(abs)
+                  } else if (re.test(entry.name) || re.test(rel)) {
+                    const dest = join(outputDir, rel)
+                    mkdirSync(resolve(dest, '..'), { recursive: true })
+                    cpSync(abs, dest)
+                  }
+                }
+              }
+              walk(inputDir)
+            }
           }
         }
       }

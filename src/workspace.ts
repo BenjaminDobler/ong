@@ -88,6 +88,8 @@ export interface ResolvedBuildOptions {
   annotateTemplates: boolean
   /** Raw HTML/script content to inject into index.html before </head> */
   injectHtml: string | null
+  /** Proxy rules loaded from proxyConfig file */
+  proxy: Record<string, any>
 }
 
 export type AssetConfig = string | { glob: string; input: string; output?: string }
@@ -400,6 +402,33 @@ function resolveProjectOptions(
     includePaths: rawIncludePaths.map((p: string) => abs(p)),
   }
 
+  const annotateTemplates = process.env['ONG_ANNOTATE_TEMPLATES'] === 'true'
+  const injectHtml = resolveInjectHtml()
+
+  // Load proxy config if specified (Angular proxy format → Vite server.proxy)
+  const proxy: Record<string, any> = {}
+  const rawProxyConfig = serveOpts.proxyConfig ?? merged.proxyConfig
+  if (rawProxyConfig) {
+    const proxyConfigPath = abs(rawProxyConfig)
+    if (existsSync(proxyConfigPath)) {
+      try {
+        const _require = createRequire(import.meta.url)
+        const loaded = _require(proxyConfigPath)
+        const entries: any[] = Array.isArray(loaded) ? loaded : [loaded]
+        for (const entry of entries) {
+          const contexts: string[] = Array.isArray(entry.context) ? entry.context : [entry.context]
+          const { context: _c, ...viteOpts } = entry
+          for (const ctx of contexts) {
+            // Angular uses glob-style context paths like '/api/**' — Vite matches by prefix
+            proxy[ctx.replace(/\/\*\*$/, '')] = viteOpts
+          }
+        }
+      } catch (e) {
+        console.warn(`[ong] Failed to load proxy config from ${proxyConfigPath}:`, (e as Error).message)
+      }
+    }
+  }
+
   return {
     workspaceRoot,
     projectName,
@@ -431,7 +460,8 @@ function resolveProjectOptions(
       open: opts.open ?? serveOpts.open ?? merged.open ?? false,
       host: opts.host ?? serveOpts.host,
     },
-    annotateTemplates: process.env['ONG_ANNOTATE_TEMPLATES'] === 'true',
-    injectHtml: resolveInjectHtml(),
+    annotateTemplates,
+    injectHtml,
+    proxy,
   }
 }

@@ -6,6 +6,7 @@ import { angular } from '@oxc-angular/vite'
 import type { ResolvedBuildOptions } from './workspace.js'
 import { htmlInjectPlugin, assetCopyPlugin, hmrFixPlugin } from './plugins.js'
 import { templateAnnotatePlugin, templateAnnotatePostPlugin, annotateTemplateContent } from './template-annotate-plugin.js'
+import { typeExportFixPlugin } from './prebundle.js'
 
 /**
  * Parse a tsconfig JSON file, stripping comments and trailing commas (JSONC).
@@ -170,8 +171,8 @@ export function createViteConfig(opts: ResolvedBuildOptions): InlineConfig {
   const cssPreprocessorOptions: Record<string, any> = {}
   if (opts.stylePreprocessorOptions.includePaths.length) {
     const paths = opts.stylePreprocessorOptions.includePaths
-    cssPreprocessorOptions.scss = { api: 'modern-compiler', loadPaths: paths }
-    cssPreprocessorOptions.sass = { api: 'modern-compiler', loadPaths: paths }
+    cssPreprocessorOptions.scss = { api: 'modern-compiler', loadPaths: paths, silenceDeprecations: ['import'] }
+    cssPreprocessorOptions.sass = { api: 'modern-compiler', loadPaths: paths, silenceDeprecations: ['import'] }
     cssPreprocessorOptions.less = { paths }
   }
 
@@ -200,6 +201,7 @@ export function createViteConfig(opts: ResolvedBuildOptions): InlineConfig {
     logLevel: 'info',
 
     plugins: [
+      typeExportFixPlugin(),
       opts.annotateTemplates ? templateAnnotatePlugin(workspaceRoot) : null,
       htmlInjectPlugin(opts),
       ...angular({
@@ -260,6 +262,7 @@ export function createViteConfig(opts: ResolvedBuildOptions): InlineConfig {
       open: opts.serve.open,
       host: opts.serve.host ?? false,
       watch: opts.poll ? { usePolling: true, interval: opts.poll } : undefined,
+      proxy: Object.keys(opts.proxy).length ? opts.proxy : undefined,
       fs: {
         allow: [workspaceRoot],
       },

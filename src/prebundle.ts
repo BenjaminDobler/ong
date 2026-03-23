@@ -1,4 +1,4 @@
-import { resolve, join, dirname } from 'node:path'
+import { join, dirname } from 'node:path'
 import { mkdirSync, rmSync, readdirSync, readFileSync, existsSync } from 'node:fs'
 import { build, type InlineConfig } from 'vite'
 import { angular } from '@oxc-angular/vite'
@@ -82,8 +82,12 @@ export async function prebundleLibs(
     if (result.status === 'fulfilled') {
       bundled.set(filteredLibs[i].find, join(tempDir, `${filteredLibs[i].fileName}.mjs`))
     } else {
+      const reason = result.reason
       console.log(`  ${c.yellow}Warning: failed to pre-bundle ${filteredLibs[i].find}${c.reset}`)
-      console.log(`  ${c.dim}${result.reason?.message ?? result.reason}${c.reset}`)
+      console.log(`  ${c.dim}${reason?.message ?? reason}${c.reset}`)
+      if (reason?.stack) {
+        console.log(`  ${c.dim}${reason.stack}${c.reset}`)
+      }
     }
   })
 
@@ -180,6 +184,76 @@ function findTransitiveDeps(appSrcDir: string, localLibs: LocalLib[]): Set<strin
   return visited
 }
 
+/**
+ * Vite plugin that rewrites `export { Foo }` / `export { Foo } from '...'`
+ * to `export type { Foo }` when `Foo` is a TypeScript interface or type alias.
+ * This prevents rolldown from throwing MISSING_EXPORT errors for type-only
+ * symbols that OXC erases during compilation.
+ */
+export function typeExportFixPlugin(): import('vite').Plugin {
+  return {
+    name: 'ong:type-export-fix',
+    enforce: 'pre',
+    transform(code, id) {
+      if (!id.endsWith('.ts')) return null
+
+      const getTypeNames = (src: string): Set<string> => {
+        const names = new Set<string>()
+        for (const m of src.matchAll(/^\s*(?:export\s+)?(?:interface|type)\s+(\w+)/gm)) {
+          names.add(m[1])
+        }
+        return names
+      }
+
+      // Names declared as interface/type in this file
+      const localTypeNames = getTypeNames(code)
+
+      const rewritten = code.replace(
+        /\bexport\s*\{([^}]+)\}(\s*from\s*['"]([^'"]+)['"])?/g,
+        (match, inner: string, fromClause: string | undefined, fromPath: string | undefined) => {
+          // For re-exports, check the source file for type declarations
+          let sourceTypeNames = localTypeNames
+          if (fromPath) {
+            const dir = dirname(id)
+            const candidates = [
+              fromPath,
+              `${fromPath}.ts`,
+              `${fromPath}/index.ts`,
+            ]
+            for (const candidate of candidates) {
+              const resolved = candidate.startsWith('.')
+                ? join(dir, candidate)
+                : candidate
+              try {
+                const src = readFileSync(resolved, 'utf-8')
+                sourceTypeNames = getTypeNames(src)
+                break
+              } catch { /* try next */ }
+            }
+          }
+
+          if (sourceTypeNames.size === 0) return match
+
+          const parts = inner.split(',').map((s: string) => {
+            const trimmed = s.trim()
+            if (!trimmed) return s
+            const name = trimmed.split(/\s+as\s+/)[0].trim()
+            if (sourceTypeNames.has(name) && !trimmed.startsWith('type ')) {
+              return ` type ${trimmed}`
+            }
+            return s
+          })
+
+          const base = `export {${parts.join(',')}}`
+          return fromClause ? `${base}${fromClause}` : base
+        }
+      )
+
+      return rewritten !== code ? { code: rewritten, map: null } : null
+    },
+  }
+}
+
 async function bundleLib(
   lib: LocalLib,
   outDir: string,
@@ -190,10 +264,11 @@ async function bundleLib(
 ) {
   await build({
     configFile: false,
-    root: opts.workspaceRoot,
+    root: dirname(lib.entry),
     logLevel: 'warn',
 
     plugins: [
+      typeExportFixPlugin(),
       ...angular({
         tsconfig: opts.tsconfig,
         sourceMap: opts.sourceMap,
