@@ -70,8 +70,10 @@ export function annotateTemplateContent(
 ): string {
   const relPath = relative(workspaceRoot, filePath)
 
-  // Find the component .ts file that owns this template
-  const tsPath = templateToTsPath.get(filePath)
+  // Find the component .ts file that owns this template.
+  // For inline templates, filePath IS the .ts file itself.
+  const isInlineTemplate = /\.tsx?$/.test(filePath)
+  const tsPath = isInlineTemplate ? filePath : templateToTsPath.get(filePath)
   const tsRelPath = tsPath ? relative(workspaceRoot, tsPath) : relPath.replace(/\.html$/, '.ts')
 
   // Read component info from the .ts file if available
@@ -180,7 +182,7 @@ export function templateAnnotatePlugin(workspaceRootOverride?: string): Plugin {
     },
 
     // Pre-transform: scan .ts files to populate templateToTsPath map
-    // so annotateTemplateContent can look up component info
+    // and annotate inline templates (OXC only calls templateTransform for external .html files)
     transform: {
       order: 'pre' as const,
       filter: { id: /\.tsx?/ },
@@ -198,7 +200,19 @@ export function templateAnnotatePlugin(workspaceRootOverride?: string): Plugin {
           templateToTsPath.set(templatePath, cleanId)
         }
 
-        return null // Don't modify the code — OXC handles template resolution
+        // Handle inline template: `...` — OXC does NOT call templateTransform for these,
+        // so we annotate them here in the pre-transform and let OXC compile the annotated HTML.
+        const inlineMatch = code.match(/template\s*:\s*`([\s\S]*?)`/)
+        if (inlineMatch) {
+          const originalHtml = inlineMatch[1]
+          const annotatedHtml = annotateTemplateContent(originalHtml, cleanId, workspaceRoot)
+          if (annotatedHtml !== originalHtml) {
+            const newCode = code.replace(inlineMatch[0], `template: \`${annotatedHtml}\``)
+            return { code: newCode, map: null }
+          }
+        }
+
+        return null
       },
     },
 
@@ -226,6 +240,12 @@ export function templateAnnotatePostPlugin(): Plugin {
         const ownedTemplates: string[] = []
         for (const [templatePath, tsPath] of templateToTsPath.entries()) {
           if (tsPath === cleanId) ownedTemplates.push(templatePath)
+        }
+
+        // Also check for inline templates — OXC passes the .ts file path
+        // itself as filePath to templateTransform for inline template: components
+        if (pendingAnnotations.has(cleanId) && !ownedTemplates.includes(cleanId)) {
+          ownedTemplates.push(cleanId)
         }
 
         if (ownedTemplates.length === 0) return null

@@ -176,19 +176,26 @@ export function createViteConfig(opts: ResolvedBuildOptions): InlineConfig {
     cssPreprocessorOptions.less = { paths }
   }
 
-  // Auto-detect tailwind.config.js in the project directory and wire up PostCSS
+  // Auto-detect tailwind.config.js in the project directory or workspace root and wire up PostCSS
   const projectDir = resolve(workspaceRoot, opts.sourceRoot, '..')
-  const tailwindConfigPath = ['tailwind.config.js', 'tailwind.config.ts', 'tailwind.config.cjs', 'tailwind.config.mjs']
-    .map(f => join(projectDir, f))
-    .find(existsSync)
+  const tailwindConfigNames = ['tailwind.config.js', 'tailwind.config.ts', 'tailwind.config.cjs', 'tailwind.config.mjs']
+  const tailwindConfigPath = tailwindConfigNames.map(f => join(projectDir, f)).find(existsSync)
+    || tailwindConfigNames.map(f => join(workspaceRoot, f)).find(existsSync)
   const postcssPlugins: Record<string, any> = {}
   if (tailwindConfigPath) {
     try {
-      const require = createRequire(join(workspaceRoot, 'package.json'))
-      const tailwindcss = require('tailwindcss')
-      const autoprefixer = require('autoprefixer')
-      postcssPlugins['tailwindcss'] = tailwindcss({ config: tailwindConfigPath })
-      postcssPlugins['autoprefixer'] = autoprefixer()
+      const req = createRequire(join(workspaceRoot, 'package.json'))
+      // Tailwind v4: PostCSS plugin moved to @tailwindcss/postcss (config-free, auto-detects content)
+      // Tailwind v3: PostCSS plugin is the tailwindcss package itself (requires config path)
+      try {
+        const tailwindPostcss = req('@tailwindcss/postcss')
+        postcssPlugins['@tailwindcss/postcss'] = (tailwindPostcss.default || tailwindPostcss)()
+      } catch {
+        const tailwindcss = req('tailwindcss')
+        const autoprefixer = req('autoprefixer')
+        postcssPlugins['tailwindcss'] = tailwindcss({ config: tailwindConfigPath })
+        postcssPlugins['autoprefixer'] = autoprefixer()
+      }
     } catch (e) {
       console.warn('[ong] Tailwind PostCSS setup failed:', (e as Error).message)
     }
