@@ -111,17 +111,16 @@ export function htmlInjectPlugin(opts: ResolvedBuildOptions): Plugin {
 }
 
 /**
- * Fixes two OXC HMR bugs:
+ * Fixes OXC HMR spurious full-reload:
  *
- * 1. Template/style changes trigger handleHotUpdate for the owning .ts file
- *    (via Vite's module dependency tracking), and OXC's handleHotUpdate sends
- *    a full-reload for any component .ts change. This plugin runs BEFORE OXC
- *    and blocks the spurious handleHotUpdate by returning [] for .ts files
- *    that just had a template/style HMR update.
+ * Template/style changes trigger handleHotUpdate for the owning .ts file
+ * (via Vite's module dependency tracking), and OXC's handleHotUpdate sends
+ * a full-reload for any component .ts change. This plugin runs BEFORE OXC
+ * and blocks the spurious handleHotUpdate by returning [] for .ts files
+ * that just had a template/style HMR update.
  *
- * 2. OXC's fs.watch clears its own resourceCache but never invalidates Vite's
- *    transform cache, so full page reloads serve stale output. We clear the
- *    module's transformResult directly.
+ * Note: Vite module graph invalidation (stale transform cache on full reload)
+ * is now handled by OXC itself since @oxc-angular/vite 0.0.19 (PR #158).
  *
  * IMPORTANT: This plugin must be placed BEFORE the angular() plugins in the
  * Vite plugin array so its handleHotUpdate runs first.
@@ -153,12 +152,6 @@ export function hmrFixPlugin(): Plugin {
           // Track this component so ws.send can suppress OXC's spurious full-reload
           recentHmrUpdates.add(filePath)
           setTimeout(() => recentHmrUpdates.delete(filePath), 2000)
-
-          // Clear Vite's cached transform so full reloads re-transform the module
-          const mod = server.moduleGraph.getModuleById(filePath)
-          if (mod) {
-            mod.transformResult = null
-          }
         }
         return result
       }
