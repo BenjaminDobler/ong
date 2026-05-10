@@ -90,6 +90,8 @@ export interface ResolvedBuildOptions {
   injectHtml: string | null
   /** Proxy rules loaded from proxyConfig file */
   proxy: Record<string, any>
+  /** Pre-transform files at server startup */
+  warmup: boolean
 }
 
 export type AssetConfig = string | { glob: string; input: string; output?: string }
@@ -109,6 +111,8 @@ export interface ResolveOptions {
   host?: string
   /** Watch mode override for build */
   watch?: boolean
+  /** Pre-transform all source files at startup */
+  warmup?: boolean
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -310,6 +314,44 @@ function relPath(base: string, target: string): string {
   return resolved
 }
 
+/**
+ * Translate Angular/webpack-dev-server proxy options to Vite's server.proxy format.
+ */
+function translateProxyOpts(opts: Record<string, any>): Record<string, any> {
+  const { pathRewrite, logLevel, bypass, ...rest } = opts
+
+  const viteOpts: Record<string, any> = { ...rest }
+
+  // pathRewrite → rewrite (Vite uses a function: (path) => rewritten)
+  if (pathRewrite && typeof pathRewrite === 'object') {
+    const rules = Object.entries(pathRewrite) as [string, string][]
+    viteOpts.rewrite = (path: string) => {
+      for (const [pattern, replacement] of rules) {
+        const re = new RegExp(pattern)
+        if (re.test(path)) return path.replace(re, replacement)
+      }
+      return path
+    }
+  }
+
+  // Adapt webpack-dev-server bypass semantics to Vite:
+  // webpack: return false = "I handled it, don't proxy", return null = "proxy normally"
+  // Vite:    return false = "send 404", return null/undefined = "proxy normally"
+  // Wrap to check if response was already sent (res.writableEnded) after bypass returns false
+  if (bypass && typeof bypass === 'function') {
+    viteOpts.bypass = async (req: any, res: any, proxyOpts: any) => {
+      const result = await bypass(req, res, proxyOpts)
+      if (result === false && res.writableEnded) {
+        // Response already sent by bypass — return undefined so Vite skips further handling
+        return undefined
+      }
+      return result
+    }
+  }
+
+  return viteOpts
+}
+
 function resolveProjectOptions(
   workspaceRoot: string,
   projectName: string,
@@ -414,13 +456,29 @@ function resolveProjectOptions(
       try {
         const _require = createRequire(import.meta.url)
         const loaded = _require(proxyConfigPath)
-        const entries: any[] = Array.isArray(loaded) ? loaded : [loaded]
-        for (const entry of entries) {
-          const contexts: string[] = Array.isArray(entry.context) ? entry.context : [entry.context]
-          const { context: _c, ...viteOpts } = entry
-          for (const ctx of contexts) {
-            // Angular uses glob-style context paths like '/api/**' — Vite matches by prefix
-            proxy[ctx.replace(/\/\*\*$/, '')] = viteOpts
+
+        if (Array.isArray(loaded)) {
+          // Array format: [{ context: ['/api/**'], target: '...' }]
+          for (const entry of loaded) {
+            const contexts: string[] = Array.isArray(entry.context) ? entry.context : [entry.context]
+            const { context: _c, ...rest } = entry
+            for (const ctx of contexts) {
+              proxy[ctx.replace(/\/\*\*$/, '')] = translateProxyOpts(rest)
+            }
+          }
+        } else if (typeof loaded === 'object' && loaded !== null) {
+          // Object format: { '/frontends/foo/': { target: '...', ... } }
+          for (const [path, opts] of Object.entries(loaded)) {
+            if (opts && typeof opts === 'object') {
+              proxy[path.replace(/\/\*\*$/, '')] = translateProxyOpts(opts as any)
+            }
+          }
+        }
+        const localEntries = Object.entries(proxy).filter(([, v]) => (v as any).target?.includes('localhost'))
+        if (localEntries.length > 0) {
+          console.log(`  [ong] Proxy: ${localEntries.length} local entries`)
+          for (const [p, v] of localEntries) {
+            console.log(`    ${p} → ${(v as any).target}`)
           }
         }
       } catch (e) {
@@ -463,5 +521,6 @@ function resolveProjectOptions(
     annotateTemplates,
     injectHtml,
     proxy,
+    warmup: opts.warmup ?? false,
   }
 }

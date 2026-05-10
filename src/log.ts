@@ -12,13 +12,18 @@ const c = {
   gray: '\x1b[90m',
 }
 
-export function banner(command: string, projectName: string, configName: string) {
+export function banner(command: string, projectName: string, configName: string, angularVersion?: { major: number; minor: number; patch: number }) {
   console.log()
   console.log(`  ${c.green}${c.bold}ong${c.reset} ${c.dim}— Angular + OXC + Vite${c.reset}`)
   console.log()
   console.log(`  ${c.dim}Command:${c.reset}        ${command}`)
   console.log(`  ${c.dim}Project:${c.reset}        ${projectName}`)
   console.log(`  ${c.dim}Configuration:${c.reset}  ${configName}`)
+  if (angularVersion) {
+    console.log(`  ${c.dim}Angular:${c.reset}        ${angularVersion.major}.${angularVersion.minor}.${angularVersion.patch}`)
+  } else {
+    console.log(`  ${c.yellow}Angular:${c.reset}        ${c.yellow}not detected${c.reset}`)
+  }
   console.log()
 }
 

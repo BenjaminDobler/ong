@@ -2,7 +2,7 @@ import { resolve } from 'node:path'
 import { createRequire } from 'node:module'
 import { createServer, build } from 'vite'
 import { resolveWorkspace, type ResolveOptions } from './workspace.js'
-import { createViteConfig } from './config.js'
+import { createViteConfig, detectAngularVersion } from './config.js'
 import { prebundleLibs } from './prebundle.js'
 import { banner, printBuildStats, printHelp, error } from './log.js'
 
@@ -21,6 +21,7 @@ interface CliArgs {
   prebundleLibs?: boolean
   annotateTemplates?: boolean
   injectHtmlFile?: string
+  warmup?: boolean
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -55,6 +56,8 @@ function parseArgs(argv: string[]): CliArgs {
       result.watch = true
     } else if (arg === '--prebundle-libs') {
       result.prebundleLibs = true
+    } else if (arg === '--warmup') {
+      result.warmup = true
     } else if (arg === '--annotate-templates') {
       result.annotateTemplates = true
     } else if (arg === '--inject-html-file') {
@@ -94,6 +97,7 @@ async function main() {
     open: args.open,
     host: args.host,
     watch: args.watch,
+    warmup: args.warmup,
   }
 
   const buildOpts = resolveWorkspace(cwd, resolveOpts)
@@ -110,7 +114,7 @@ async function main() {
     }
   }
 
-  banner(args.command, buildOpts.projectName, buildOpts.configName)
+  banner(args.command, buildOpts.projectName, buildOpts.configName, detectAngularVersion(buildOpts.workspaceRoot))
 
   let viteConfig = createViteConfig(buildOpts)
 

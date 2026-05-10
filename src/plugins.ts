@@ -16,6 +16,140 @@ const TEMPLATE_RE = /template\s*:\s*`([\s\S]*?)`/
 const ANGULAR_COMPONENT_PREFIX = '@ng/component'
 
 /**
+ * Fixes Angular's compiled template output where optional-chaining assignments
+ * like `(((x == null)? null: x.y.z) = $event)` are generated for two-way bindings.
+ * OXC's strict parser rejects these. This plugin rewrites them to valid JS by
+ * replacing the invalid conditional assignment with a null-guarded assignment.
+ */
+export function angularSafeAssignPlugin(): Plugin {
+  return {
+    name: 'ong:angular-safe-assign-fix',
+    transform: {
+      order: 'pre' as const,
+      handler(code, id) {
+        if (!id.endsWith('.js') && !id.endsWith('.ts')) return null
+        if (!code.includes('== null)? null:')) return null
+        if (code.includes('== null)? null:') && code.includes('= $event)')) {
+          console.log(`[ong:safe-assign] Processing: ${id}`)
+        }
+
+        let changed = false
+        let result = code
+        const marker = '= $event)'
+        let searchFrom = 0
+
+        while (true) {
+          const endIdx = result.indexOf(marker, searchFrom)
+          if (endIdx === -1) break
+
+          const assignIdx = endIdx
+          let depth = 1
+          let startIdx = assignIdx - 1
+          while (startIdx >= 0 && depth > 0) {
+            if (result[startIdx] === ')') depth++
+            else if (result[startIdx] === '(') depth--
+            startIdx--
+          }
+          startIdx++
+
+          const fullExpr = result.slice(startIdx, endIdx + marker.length)
+          if (!fullExpr.includes('== null)? null:')) {
+            searchFrom = endIdx + marker.length
+            continue
+          }
+
+          const lhs = fullExpr.slice(1, fullExpr.lastIndexOf('= $event')).trim()
+          const lhsTrimmed = lhs.replace(/\)\s*$/, '')
+
+          const lastNull = lhsTrimmed.lastIndexOf('? null:')
+          if (lastNull === -1) {
+            searchFrom = endIdx + marker.length
+            continue
+          }
+
+          const afterLastNull = lhsTrimmed.slice(lastNull + '? null:'.length).trim()
+          const propPath = afterLastNull.replace(/[)]+$/, '').trim()
+          if (!propPath) {
+            searchFrom = endIdx + marker.length
+            continue
+          }
+
+          const conditions: string[] = []
+          const nullCheckRe = /([a-zA-Z_$][\w$.]*)\s*==\s*null/g
+          let m: RegExpExecArray | null
+          while ((m = nullCheckRe.exec(lhsTrimmed)) !== null) {
+            conditions.push(`${m[1]} != null`)
+          }
+
+          if (conditions.length === 0) {
+            searchFrom = endIdx + marker.length
+            continue
+          }
+
+          const replacement = `(${conditions.join(' && ')} && (${propPath} = $event))`
+          result = result.slice(0, startIdx) + replacement + result.slice(endIdx + marker.length)
+          changed = true
+          searchFrom = startIdx + replacement.length
+        }
+
+        return changed ? { code: result, map: null } : null
+      },
+    },
+  }
+}
+
+/**
+ * Shims jQuery as a global for libraries like Bootstrap 3 that expect `window.jQuery`.
+ * Equivalent to webpack's `imports-loader?jQuery=jquery` + ProvidePlugin.
+ *
+ * Injects jQuery global assignment at the top of the pre-bundled bootstrap chunk
+ * when it's served by Vite's dev server.
+ */
+export function jqueryShimPlugin(workspaceRoot: string): Plugin {
+  let hasJquery = false
+  let hasBootstrap = false
+
+  return {
+    name: 'ong:jquery-shim',
+    enforce: 'pre',
+    config() {
+      hasJquery = existsSync(join(workspaceRoot, 'node_modules', 'jquery'))
+      hasBootstrap = existsSync(join(workspaceRoot, 'node_modules', 'bootstrap'))
+      if (!hasJquery || !hasBootstrap) return
+      return {
+        optimizeDeps: {
+          include: ['jquery', 'bootstrap'],
+        },
+      }
+    },
+    transform(code, id) {
+      if (!hasJquery || !hasBootstrap) return null
+      // Match the pre-bundled bootstrap dep served from .vite/deps/bootstrap.js
+      if (!id.includes('.vite/deps/bootstrap.js')) return null
+      // Inject jQuery import and global assignment before any code executes
+      const injection = `import jq__ from "jquery";\nwindow.jQuery = jq__; window.$ = jq__; var jQuery = jq__;\n`
+      return { code: injection + code, map: null }
+    },
+  }
+}
+
+/**
+ * Declares webpack-specific globals (like __webpack_nonce__) that don't exist in Vite.
+ * Prevents ReferenceError when migrating apps from webpack to Vite.
+ */
+export function webpackGlobalsShimPlugin(): Plugin {
+  return {
+    name: 'ong:webpack-globals-shim',
+    enforce: 'pre',
+    transform(code, id) {
+      if (!id.endsWith('.ts') && !id.endsWith('.js')) return null
+      if (!code.includes('__webpack_nonce__')) return null
+      return { code: `var __webpack_nonce__;\n${code}`, map: null }
+    },
+  }
+}
+
+/**
  * Injects global styles, scripts, polyfills, and the entry point into index.html.
  * This makes a standard Angular index.html work with Vite without modifications.
  */

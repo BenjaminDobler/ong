@@ -4,7 +4,7 @@ import { createRequire } from 'node:module'
 import type { InlineConfig, Alias } from 'vite'
 import { angular } from '@oxc-angular/vite'
 import type { ResolvedBuildOptions } from './workspace.js'
-import { htmlInjectPlugin, assetCopyPlugin, hmrFixPlugin } from './plugins.js'
+import { htmlInjectPlugin, assetCopyPlugin, hmrFixPlugin, angularSafeAssignPlugin, jqueryShimPlugin, webpackGlobalsShimPlugin } from './plugins.js'
 import { templateAnnotatePlugin, templateAnnotatePostPlugin, annotateTemplateContent } from './template-annotate-plugin.js'
 import { typeExportFixPlugin } from './prebundle.js'
 
@@ -142,6 +142,28 @@ export function detectAngularVersion(workspaceRoot: string): { major: number; mi
   }
 }
 
+function fileReplacementPlugin(replacements: { replace: string; with: string }[]): import('vite').Plugin | null {
+  if (!replacements.length) return null
+  const map = new Map(replacements.map(r => [r.replace, r.with]))
+  return {
+    name: 'ong:file-replacements',
+    enforce: 'pre',
+    resolveId(source, importer) {
+      if (!importer) return null
+      const resolved = source.startsWith('.')
+        ? resolve(dirname(importer), source)
+        : null
+      if (!resolved) return null
+      // Check with and without .ts extension
+      const candidates = [resolved, `${resolved}.ts`]
+      for (const c of candidates) {
+        if (map.has(c)) return map.get(c)!
+      }
+      return null
+    },
+  }
+}
+
 /**
  * Creates a Vite InlineConfig from resolved Angular build options.
  */
@@ -208,6 +230,9 @@ export function createViteConfig(opts: ResolvedBuildOptions): InlineConfig {
     logLevel: 'info',
 
     plugins: [
+      fileReplacementPlugin(opts.fileReplacements),
+      jqueryShimPlugin(workspaceRoot),
+      webpackGlobalsShimPlugin(),
       typeExportFixPlugin(),
       // hmrFixPlugin must come BEFORE angular() so its handleHotUpdate runs first
       !opts.optimization ? hmrFixPlugin() : null,
@@ -225,6 +250,7 @@ export function createViteConfig(opts: ResolvedBuildOptions): InlineConfig {
           : undefined,
       }),
       opts.annotateTemplates ? templateAnnotatePostPlugin() : null,
+      angularSafeAssignPlugin(),
       assetCopyPlugin(opts.assets, workspaceRoot, sourceRoot),
     ].filter(Boolean),
 
@@ -271,6 +297,13 @@ export function createViteConfig(opts: ResolvedBuildOptions): InlineConfig {
       host: opts.serve.host ?? false,
       watch: opts.poll ? { usePolling: true, interval: opts.poll } : undefined,
       proxy: Object.keys(opts.proxy).length ? opts.proxy : undefined,
+      warmup: opts.warmup ? {
+        clientFiles: [
+          resolve(workspaceRoot, sourceRoot, '**/*.ts'),
+          resolve(workspaceRoot, sourceRoot, '**/*.html'),
+          resolve(workspaceRoot, sourceRoot, '**/*.scss'),
+        ],
+      } : undefined,
       fs: {
         allow: [workspaceRoot],
       },
